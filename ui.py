@@ -1,4 +1,5 @@
 import json
+import html as htmllib
 import gradio as gr
 import requests
 from datetime import datetime, timedelta
@@ -18,8 +19,8 @@ def api_get(path: str, params: dict) -> dict:
 
 # ── HTML renderers ────────────────────────────────────────────────────────────
 
-TH  = "style='border:1px solid rgba(128,128,128,0.4);padding:8px;background:rgba(128,128,128,0.15);text-align:left;font-weight:600'"
-TD  = "style='border:1px solid rgba(128,128,128,0.3);padding:8px'"
+TH   = "style='border:1px solid rgba(128,128,128,0.4);padding:8px;background:rgba(128,128,128,0.15);text-align:left;font-weight:600'"
+TD   = "style='border:1px solid rgba(128,128,128,0.3);padding:8px'"
 TD_C = "style='border:1px solid rgba(128,128,128,0.3);padding:8px;text-align:center'"
 
 
@@ -28,7 +29,7 @@ def render_stats(data: dict) -> str:
         return f"<p style='color:red'>⚠ {data['error']}</p>"
     events = data.get("events", [])
     if not events:
-        return "<p style='color:#888'>결과 없음 / No results</p>"
+        return "<p style='opacity:0.5'>결과 없음 / No results</p>"
     tr = data["time_range"]
     html  = f"<h3>📅 {tr['start']} ~ {tr['end']}</h3>"
     html += "<table style='border-collapse:collapse;width:400px'>"
@@ -44,142 +45,130 @@ def render_list(data: dict) -> str:
         return f"<p style='color:red'>⚠ {data['error']}</p>"
     records = data.get("records", [])
     if not records:
-        return "<p style='color:#888'>결과 없음 / No records</p>"
+        return "<p style='opacity:0.5'>결과 없음 / No records</p>"
 
-    html  = f"<p style='color:#555'>{len(records)}건 조회됨</p>"
+    html  = f"<p style='opacity:0.6'>{len(records)}건 조회됨</p>"
     html += "<div style='overflow-x:auto'>"
     html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
     html += (
         f"<tr>"
-        f"<th {TH}>Node ID</th>"
-        f"<th {TH}>Ch</th>"
-        f"<th {TH}>Reg Time</th>"
-        f"<th {TH}>Detect Time (+9h)</th>"
-        f"<th {TH}>Event / 이벤트</th>"
-        f"<th {TH}>Preview</th>"
+        f"<th {TH}>Node ID</th><th {TH}>Ch</th>"
+        f"<th {TH}>Reg Time</th><th {TH}>Detect Time (+9h)</th>"
+        f"<th {TH}>Event / 이벤트</th><th {TH}>Preview</th>"
         f"</tr>"
     )
     for r in records:
-        if r["img_url"]:
+        if r.get("thumb_url"):
+            # thumb_url: 작은 thumbnail (빠름), img_url: 원본 (클릭 시 새 탭)
             img_tag = (
                 f'<a href="{r["img_url"]}" target="_blank" title="클릭하여 원본 보기">'
-                f'<img src="{r["img_url"]}" width="80" height="60" '
-                f'style="object-fit:cover;cursor:pointer;border-radius:3px" '
-                f"onerror=\"this.parentElement.innerHTML='📷'\">"
+                f'<img src="{r["thumb_url"]}" width="80" height="60" loading="lazy"'
+                f' style="object-fit:cover;cursor:pointer;border-radius:3px;display:block"'
+                f" onerror=\"this.parentElement.innerHTML='📷'\">"
                 f'</a>'
             )
         else:
-            img_tag = "<span style='color:#bbb'>—</span>"
+            img_tag = "<span style='opacity:0.4'>—</span>"
 
         html += (
             f"<tr>"
-            f"<td {TD}>{r['node_id']}</td>"
-            f"<td {TD_C}>{r['ch']}</td>"
-            f"<td {TD}>{r['reg_dt']}</td>"
-            f"<td {TD}>{r['dtct_dt']}</td>"
-            f"<td {TD}>{r['event']}</td>"
-            f"<td {TD_C}>{img_tag}</td>"
+            f"<td {TD}>{r['node_id']}</td><td {TD_C}>{r['ch']}</td>"
+            f"<td {TD}>{r['reg_dt']}</td><td {TD}>{r['dtct_dt']}</td>"
+            f"<td {TD}>{r['event']}</td><td {TD_C}>{img_tag}</td>"
             f"</tr>"
         )
     html += "</table></div>"
     return html
 
 
+def _node_btn_onclick(node_id: str, ch: str, start_dt: str, end_dt: str, events: list) -> str:
+    """
+    Her buton için bağımsız, self-contained onclick JS.
+    <script> tagı kullanmaz — onclick attribute her zaman çalışır.
+    Tüm parametreler Python tarafında JS'e gömülür.
+    """
+    api   = json.dumps(API_BASE_URL)
+    nid   = json.dumps(node_id)
+    ch_   = json.dumps(ch)
+    sd    = json.dumps(start_dt)
+    ed    = json.dumps(end_dt)
+    evs   = json.dumps(events, ensure_ascii=False)
+    th_s  = "border:1px solid rgba(128,128,128,0.4);padding:6px;background:rgba(128,128,128,0.15);font-weight:600"
+    td_s  = "border:1px solid rgba(128,128,128,0.3);padding:6px"
+    tdc_s = "border:1px solid rgba(128,128,128,0.3);padding:6px;text-align:center"
+
+    js_lines = [
+        "(async function(){",
+        "  var b=document.getElementById('nd-result');",
+        "  if(!b)return;",
+        "  b.style.display='block';",
+        "  b.innerHTML='<p>불러오는 중...</p>';",
+        "  try{",
+        f"    var p=new URLSearchParams({{node_id:{nid},ch:{ch_},start_dt:{sd},end_dt:{ed}}});",
+        f"    {evs}.forEach(function(e){{p.append('events',e)}});",
+        f"    var r=await fetch({api}+'/api/search/node-detail?'+p);",
+        "    var d=await r.json();",
+        f"    var h='<h4 style=\"margin:0 0 8px\">Node: <b>'+{nid}+'</b> / Ch: <b>'+{ch_}+'</b></h4>';",
+        f"    var ts='{th_s}';",
+        f"    var td='{td_s}';",
+        f"    var tc='{tdc_s}';",
+        "    if(d.events&&d.events.length){",
+        "      h+='<table style=\"border-collapse:collapse\">';",
+        "      h+='<tr><th style=\"'+ts+'\">Event</th><th style=\"'+ts+'\">Count</th></tr>';",
+        "      d.events.forEach(function(e){",
+        "        h+='<tr><td style=\"'+td+'\">'+e.event+'</td><td style=\"'+tc+'\"><b>'+e.count+'</b></td></tr>';",
+        "      });",
+        "      h+='</table>';",
+        "    }else{h+='<p>데이터 없음</p>';}",
+        "    b.innerHTML=h;",
+        "  }catch(err){b.innerHTML='<p style=\"color:red\">오류: '+err.message+'</p>';}",
+        "})();",
+    ]
+    return htmllib.escape("".join(js_lines))
+
+
 def render_node_stats(data: dict, start_dt: str, end_dt: str, selected_events: list) -> str:
-    """
-    Node istatistik tablosu + her satırda '자세히 보기' butonu.
-    Buton tıklandığında JS doğrudan FastAPI'yi çağırır,
-    sonucu aynı HTML bloğu içindeki div'e yazar — Gradio callback gerekmez.
-    """
     if "error" in data:
         return f"<p style='color:red'>⚠ {data['error']}</p>"
     nodes = data.get("nodes", [])
     if not nodes:
-        return "<p style='color:#888'>결과 없음 / No node data</p>"
+        return "<p style='opacity:0.5'>결과 없음 / No node data</p>"
 
     rows_html = ""
     for r in nodes:
-        node_id_js = json.dumps(str(r["node_id"]))
-        ch_js      = json.dumps(str(r["ch"]))
+        onclick = _node_btn_onclick(
+            str(r["node_id"]), str(r["ch"]), start_dt, end_dt, selected_events
+        )
         rows_html += (
             f"<tr>"
             f"<td {TD}>{r['node_id']}</td>"
             f"<td {TD_C}>{r['ch']}</td>"
             f"<td {TD_C}><b>{r['total']}</b></td>"
             f"<td {TD_C}>"
-            f"  <button onclick=\"showNodeDetail({node_id_js},{ch_js})\" "
-            f"    style='padding:4px 12px;cursor:pointer;border-radius:4px;"
-            f"           border:1px solid #aaa;background:#f7f7f7;font-size:13px'>"
-            f"    자세히 보기"
-            f"  </button>"
+            f"<button onclick=\"{onclick}\""
+            f" style='padding:4px 12px;cursor:pointer;border-radius:4px;"
+            f"border:1px solid rgba(128,128,128,0.5);"
+            f"background:rgba(128,128,128,0.1);font-size:13px'>"
+            f"자세히 보기</button>"
             f"</td>"
             f"</tr>"
         )
 
-    # JS 변수들을 JSON으로 안전하게 embed
-    events_js   = json.dumps(selected_events)
-    start_js    = json.dumps(start_dt)
-    end_js      = json.dumps(end_dt)
-    api_base_js = json.dumps(API_BASE_URL)
-
-    return f"""
-    <table style='border-collapse:collapse;width:100%'>
-      <tr>
-        <th {TH}>Node ID</th>
-        <th {TH}>Channel</th>
-        <th {TH}>Total Events / 총 건수</th>
-        <th {TH}>Detail / 상세</th>
-      </tr>
-      {rows_html}
-    </table>
-
-    <div id="node-detail-box"
-         style="margin-top:16px;padding:12px;border:1px solid #e0e0e0;
-                border-radius:6px;display:none">
-    </div>
-
-    <script>
-    (function() {{
-      const _events  = {events_js};
-      const _start   = {start_js};
-      const _end     = {end_js};
-      const _apiBase = {api_base_js};
-
-      window.showNodeDetail = async function(nodeId, ch) {{
-        const box = document.getElementById('node-detail-box');
-        box.style.display = 'block';
-        box.innerHTML = '<p style="color:#888">불러오는 중...</p>';
-
-        const p = new URLSearchParams({{node_id: nodeId, ch: ch, start_dt: _start, end_dt: _end}});
-        _events.forEach(e => p.append('events', e));
-
-        try {{
-          const resp = await fetch(`${{_apiBase}}/api/search/node-detail?${{p}}`);
-          const d    = await resp.json();
-
-          let html = `<h4 style="margin:0 0 8px">🖥 Node: <b>${{nodeId}}</b> &nbsp;/&nbsp; Ch: <b>${{ch}}</b></h4>`;
-          if (!d.events || d.events.length === 0) {{
-            html += '<p style="color:#888">데이터 없음</p>';
-          }} else {{
-            html += '<table style="border-collapse:collapse">';
-            html += '<tr><th style="border:1px solid rgba(128,128,128,0.4);padding:6px;background:rgba(128,128,128,0.15);font-weight:600">Event</th>'
-                  + '<th style="border:1px solid rgba(128,128,128,0.4);padding:6px;background:rgba(128,128,128,0.15);font-weight:600">Count</th></tr>';
-            for (const e of d.events) {{
-              html += `<tr>`
-                    + `<td style="border:1px solid rgba(128,128,128,0.3);padding:6px">${{e.event}}</td>`
-                    + `<td style="border:1px solid rgba(128,128,128,0.3);padding:6px;text-align:center"><b>${{e.count}}</b></td>`
-                    + `</tr>`;
-            }}
-            html += '</table>';
-          }}
-          box.innerHTML = html;
-        }} catch(err) {{
-          box.innerHTML = `<p style="color:red">오류: ${{err.message}}</p>`;
-        }}
-      }};
-    }})();
-    </script>
-    """
+    return (
+        f"<table style='border-collapse:collapse;width:100%'>"
+        f"<tr>"
+        f"<th {TH}>Node ID</th>"
+        f"<th {TH}>Channel</th>"
+        f"<th {TH}>Total Events / 총 건수</th>"
+        f"<th {TH}>Detail / 상세</th>"
+        f"</tr>"
+        f"{rows_html}"
+        f"</table>"
+        f"<div id='nd-result'"
+        f" style='margin-top:14px;padding:12px;"
+        f"border:1px solid rgba(128,128,128,0.3);"
+        f"border-radius:6px;display:none'></div>"
+    )
 
 
 # ── Search logic ──────────────────────────────────────────────────────────────
@@ -208,17 +197,57 @@ _default_end   = _now.strftime("%Y-%m-%d %H:%M:%S")
 
 with gr.Blocks(title="Security Analytics Platform", theme=gr.themes.Soft()) as app:
 
-    # ── Home ──────────────────────────────────────────────────────────────────
     with gr.Tabs() as tabs:
         with gr.Tab("🏠 Home", id=0):
-            gr.Markdown("# Security Analytics Platform\n### 보안 분석 플랫폼")
-            gr.Markdown("---")
-            with gr.Row():
-                home_search_btn = gr.Button("🔍\n\n조희\nSearch",   scale=1, size="lg")
-                gr.Button(       "📊\n\nReports\n보고서",           scale=1, size="lg", interactive=False)
-                gr.Button(       "⚙️\n\nSettings\n설정",           scale=1, size="lg", interactive=False)
+            gr.HTML(
+                "<div style='text-align:center;padding:48px 0 24px'>"
+                "<h1 style='font-size:2rem;margin-bottom:6px'>Security Analytics Platform</h1>"
+                "<p style='opacity:0.5;font-size:1rem'>보안 분석 플랫폼</p>"
+                "</div>"
+            )
+            # 검색 카드 클릭 → 숨겨진 Gradio 버튼 트리거
+            gr.HTML("""
+                <div style="display:flex;justify-content:center;gap:24px;padding:8px 0 32px">
 
-        # ── Search / 조희 ─────────────────────────────────────────────────────
+                  <div onclick="(function(){ var tabs=document.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('조희')){tabs[i].click();break;}} })()"
+                       style="width:180px;height:180px;border-radius:14px;
+                              border:2px solid rgba(100,149,237,0.6);
+                              background:rgba(100,149,237,0.08);
+                              display:flex;flex-direction:column;
+                              align-items:center;justify-content:center;
+                              gap:10px;cursor:pointer;user-select:none;
+                              transition:background 0.2s"
+                       onmouseover="this.style.background='rgba(100,149,237,0.18)'"
+                       onmouseout="this.style.background='rgba(100,149,237,0.08)'">
+                    <span style="font-size:2.4rem">🔍</span>
+                    <span style="font-size:1.1rem;font-weight:600">조희</span>
+                    <span style="font-size:0.8rem;opacity:0.6">Search</span>
+                  </div>
+
+                  <div style="width:180px;height:180px;border-radius:14px;
+                              border:2px dashed rgba(128,128,128,0.25);
+                              display:flex;flex-direction:column;
+                              align-items:center;justify-content:center;
+                              gap:10px;opacity:0.3;cursor:not-allowed">
+                    <span style="font-size:2.4rem">📊</span>
+                    <span style="font-size:1.1rem;font-weight:600">보고서</span>
+                    <span style="font-size:0.8rem">Reports</span>
+                  </div>
+
+                  <div style="width:180px;height:180px;border-radius:14px;
+                              border:2px dashed rgba(128,128,128,0.25);
+                              display:flex;flex-direction:column;
+                              align-items:center;justify-content:center;
+                              gap:10px;opacity:0.3;cursor:not-allowed">
+                    <span style="font-size:2.4rem">⚙️</span>
+                    <span style="font-size:1.1rem;font-weight:600">설정</span>
+                    <span style="font-size:0.8rem">Settings</span>
+                  </div>
+
+                </div>
+            """)
+            home_search_btn = gr.Button(visible=False)
+
         with gr.Tab("🔍 조희", id=1):
             gr.Markdown("## 조희 / Search")
 
@@ -226,12 +255,12 @@ with gr.Blocks(title="Security Analytics Platform", theme=gr.themes.Soft()) as a
                 start_input = gr.Textbox(
                     label="Start / 시작",
                     value=_default_start,
-                    placeholder="YYYY-MM-DD HH:MM:SS",
+                    placeholder="YYYY-MM-DD HH:MM:SS  또는  20260316000000",
                 )
                 end_input = gr.Textbox(
                     label="End / 종료",
                     value=_default_end,
-                    placeholder="YYYY-MM-DD HH:MM:SS",
+                    placeholder="YYYY-MM-DD HH:MM:SS  또는  20260316235959",
                 )
 
             events_check = gr.CheckboxGroup(
@@ -247,23 +276,19 @@ with gr.Blocks(title="Security Analytics Platform", theme=gr.themes.Soft()) as a
 
             gr.Markdown("---")
 
-            # ── 결과 탭 ───────────────────────────────────────────────────────
             with gr.Tabs():
                 with gr.Tab("📊 Stats / 통계"):
-                    stats_out = gr.HTML("<p style='color:#aaa'>조희 후 결과가 여기 표시됩니다.</p>")
+                    stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
 
                 with gr.Tab("📋 List / 목록"):
-                    list_out = gr.HTML("<p style='color:#aaa'>조희 후 결과가 여기 표시됩니다.</p>")
+                    list_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
 
                 with gr.Tab("🖥 Node Stats / 노드 통계"):
-                    node_stats_out = gr.HTML("<p style='color:#aaa'>조희 후 결과가 여기 표시됩니다.</p>")
+                    node_stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
 
-    # ── Wiring ────────────────────────────────────────────────────────────────
     home_search_btn.click(lambda: gr.Tabs(selected=1), outputs=tabs)
-
     btn_all.click(  lambda: ALL_EVENTS, outputs=events_check)
     btn_clear.click(lambda: [],         outputs=events_check)
-
     btn_search.click(
         do_search,
         inputs=[start_input, end_input, events_check],

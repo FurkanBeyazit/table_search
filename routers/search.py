@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Query
+import os
+import io
+from urllib.parse import quote
+from fastapi import APIRouter, Query, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
 from typing import List
 from datetime import datetime, timedelta
 
@@ -6,7 +10,7 @@ import database
 from config import (
     BHVR_TABLE, DST_TABLE, EVENT_COL,
     BHVR_EVENTS, DST_EVENTS, ALL_EVENTS,
-    LINUX_PATH_PREFIX, WINDOWS_MOUNT_LETTER,
+    LINUX_PATH_PREFIX, WINDOWS_MOUNT_LETTER, API_BASE_URL,
 )
 
 router = APIRouter(prefix="/api/search", tags=["search"])
@@ -14,17 +18,33 @@ router = APIRouter(prefix="/api/search", tags=["search"])
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def img_to_file_url(img_path: str) -> str:
-    """Convert Linux image path → browser-friendly file:// URL for Windows mount."""
+def parse_dt_param(s: str) -> str:
+    """Accept both '20260316111320' (14-digit) and '2026-03-16 11:13:20' formats."""
+    s = s.strip()
+    if len(s) == 14 and s.isdigit():
+        return datetime.strptime(s, "%Y%m%d%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
+    return s
+
+
+def linux_to_win(img_path: str) -> str:
+    """Convert Linux path to Windows path string."""
+    win = img_path.replace(LINUX_PATH_PREFIX, f"{WINDOWS_MOUNT_LETTER}:\\")
+    return win.replace("/", "\\")
+
+
+def img_to_api_url(img_path: str) -> str:
     if not img_path:
         return ""
-    rel = img_path.replace(LINUX_PATH_PREFIX, "").lstrip("/")
-    rel = rel.replace("\\", "/")
-    return f"file:///{WINDOWS_MOUNT_LETTER}:/{rel}"
+    return f"{API_BASE_URL}/api/search/image?path={quote(img_path)}"
+
+
+def img_to_thumb_url(img_path: str) -> str:
+    if not img_path:
+        return ""
+    return f"{API_BASE_URL}/api/search/thumbnail?path={quote(img_path)}"
 
 
 def parse_dtct_dt(val) -> str:
-    """Parse dtct_dt (stored as YYYYMMDDHHmmss UTC) and add 9 h → KST string."""
     if not val:
         return ""
     try:
@@ -35,11 +55,6 @@ def parse_dtct_dt(val) -> str:
 
 
 def build_base_sql(events: List[str], start_dt: str, end_dt: str):
-    """
-    Build a UNION ALL query over t_bhvr_anly and/or t_dst_anly
-    depending on which event types are requested.
-    Returns (sql_string, params_list).
-    """
     bhvr = [e for e in events if e in BHVR_EVENTS]
     dst  = [e for e in events if e in DST_EVENTS]
     parts, params = [], []
@@ -68,7 +83,42 @@ def build_base_sql(events: List[str], start_dt: str, end_dt: str):
     return " UNION ALL ".join(parts), params
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+# ── Image endpoints ───────────────────────────────────────────────────────────
+
+@router.get("/image")
+def get_image(path: str):
+    """Full-size image served over HTTP."""
+    win_path = linux_to_win(path)
+    if not os.path.isfile(win_path):
+        raise HTTPException(status_code=404, detail=f"Not found: {win_path}")
+    return FileResponse(win_path)
+
+
+@router.get("/thumbnail")
+def get_thumbnail(path: str):
+    """Resized thumbnail (120×90, JPEG q50) with browser cache."""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Pillow not installed")
+
+    win_path = linux_to_win(path)
+    if not os.path.isfile(win_path):
+        raise HTTPException(status_code=404, detail=f"Not found: {win_path}")
+
+    img = Image.open(win_path)
+    img.thumbnail((120, 90), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=50)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+# ── Search endpoints ──────────────────────────────────────────────────────────
 
 @router.get("/stats")
 def get_stats(
@@ -76,7 +126,7 @@ def get_stats(
     end_dt: str,
     events: List[str] = Query(default=ALL_EVENTS),
 ):
-    """Event counts grouped by type for the given time range."""
+    start_dt, end_dt = parse_dt_param(start_dt), parse_dt_param(end_dt)
     base, params = build_base_sql(events, start_dt, end_dt)
     if not base:
         return {"time_range": {"start": start_dt, "end": end_dt}, "events": []}
@@ -99,7 +149,7 @@ def get_list(
     end_dt: str,
     events: List[str] = Query(default=ALL_EVENTS),
 ):
-    """Detailed record list (max 100 rows, newest first)."""
+    start_dt, end_dt = parse_dt_param(start_dt), parse_dt_param(end_dt)
     base, params = build_base_sql(events, start_dt, end_dt)
     if not base:
         return {"records": []}
@@ -109,12 +159,13 @@ def get_list(
     return {
         "records": [
             {
-                "node_id": r["node_id"],
-                "ch":      r["ch"],
-                "reg_dt":  str(r["reg_dt"]),
-                "dtct_dt": parse_dtct_dt(r.get("dtct_dt")),
-                "event":   r["event_type"],
-                "img_url": img_to_file_url(r.get("img_path", "")),
+                "node_id":   r["node_id"],
+                "ch":        r["ch"],
+                "reg_dt":    str(r["reg_dt"]),
+                "dtct_dt":   parse_dtct_dt(r.get("dtct_dt")),
+                "event":     r["event_type"],
+                "img_url":   img_to_api_url(r.get("img_path", "")),
+                "thumb_url": img_to_thumb_url(r.get("img_path", "")),
             }
             for r in rows
         ]
@@ -127,7 +178,7 @@ def get_node_stats(
     end_dt: str,
     events: List[str] = Query(default=ALL_EVENTS),
 ):
-    """Total event count per node / channel."""
+    start_dt, end_dt = parse_dt_param(start_dt), parse_dt_param(end_dt)
     base, params = build_base_sql(events, start_dt, end_dt)
     if not base:
         return {"nodes": []}
@@ -151,7 +202,7 @@ def get_node_detail(
     end_dt: str,
     events: List[str] = Query(default=ALL_EVENTS),
 ):
-    """Event breakdown for a specific node + channel."""
+    start_dt, end_dt = parse_dt_param(start_dt), parse_dt_param(end_dt)
     base, params = build_base_sql(events, start_dt, end_dt)
     if not base:
         return {"node_id": node_id, "ch": ch, "events": []}
