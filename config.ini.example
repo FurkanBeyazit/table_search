@@ -1,0 +1,18 @@
+[database]
+url = postgresql://user:password@host:port/dbname
+
+[path]
+linux_prefix  = /root/BestShot/
+windows_drive = Z
+
+[tables]
+bhvr_table = t_bhvr_anly
+dst_table  = t_dst_anly
+event_col  = evnt_knd
+
+[events]
+bhvr = 침입,배회,쓰러짐,싸움,보행자위험
+dst  = 침수,화재,연기,열감지
+
+[api]
+base_url = http://127.0.0.1:8000

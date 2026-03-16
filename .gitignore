@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Config (contains credentials)
+config.ini
+
+# Gradio cache
+gradio_cached_examples/
+.gradio/
+
+# OS
+.DS_Store
+Thumbs.db
+*.sql
+
+#claude
+*.claude/
