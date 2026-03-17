@@ -1,6 +1,8 @@
 fastapi
 uvicorn[standard]
 psycopg2-binary
-gradio
+gradio==4.16.0
 requests
 Pillow
+matplotlib
+seaborn

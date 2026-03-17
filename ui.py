@@ -2,6 +2,14 @@ import json
 import html as htmllib
 import gradio as gr
 import requests
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+sns.set_theme(style="whitegrid")
+plt.rcParams["font.family"] = "Malgun Gothic"
+plt.rcParams["axes.unicode_minus"] = False
 from datetime import datetime, timedelta
 from config import ALL_EVENTS, API_BASE_URL
 
@@ -59,7 +67,6 @@ def render_list(data: dict) -> str:
     )
     for r in records:
         if r.get("thumb_url"):
-            # thumb_url: 작은 thumbnail (빠름), img_url: 원본 (클릭 시 새 탭)
             img_tag = (
                 f'<a href="{r["img_url"]}" target="_blank" title="클릭하여 원본 보기">'
                 f'<img src="{r["thumb_url"]}" width="80" height="60" loading="lazy"'
@@ -82,11 +89,6 @@ def render_list(data: dict) -> str:
 
 
 def _node_btn_onclick(node_id: str, ch: str, start_dt: str, end_dt: str, events: list) -> str:
-    """
-    Her buton için bağımsız, self-contained onclick JS.
-    <script> tagı kullanmaz — onclick attribute her zaman çalışır.
-    Tüm parametreler Python tarafında JS'e gömülür.
-    """
     api   = json.dumps(API_BASE_URL)
     nid   = json.dumps(node_id)
     ch_   = json.dumps(ch)
@@ -171,6 +173,100 @@ def render_node_stats(data: dict, start_dt: str, end_dt: str, selected_events: l
     )
 
 
+# ── Stats tab renderers ───────────────────────────────────────────────────────
+
+def render_today_events(data: dict) -> str:
+    if "error" in data:
+        return f"<p style='color:red'>⚠ {data['error']}</p>"
+    events = data.get("events", [])
+    if not events:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    d     = data.get("date", "")
+    as_of = data.get("as_of", "")
+    html  = f"<p style='opacity:0.6;margin:0 0 8px'>📅 {d} &nbsp;·&nbsp; {as_of} 기준</p>"
+    html += "<table style='border-collapse:collapse;width:360px'>"
+    html += f"<tr><th {TH}>이벤트</th><th {TH}>건수</th></tr>"
+    for row in events:
+        html += f"<tr><td {TD}>{row['event']}</td><td {TD_C}><b>{row['count']}</b></td></tr>"
+    html += "</table>"
+    return html
+
+
+def render_summary(data: dict) -> str:
+    if "error" in data:
+        return f"<p style='color:red'>⚠ {data['error']}</p>"
+
+    as_of = data.get("as_of", "")
+    date  = data.get("date", "")
+
+    def tbl(title: str, counts: dict) -> str:
+        t  = f"<h4 style='margin:0 0 6px'>{title}</h4>"
+        t += "<table style='border-collapse:collapse;width:320px;margin-bottom:16px'>"
+        t += f"<tr><th {TH}>기간</th><th {TH}>건수</th></tr>"
+        t += f"<tr><td {TD}>오늘</td><td {TD_C}><b>{counts.get('today', 0)}</b></td></tr>"
+        t += f"<tr><td {TD}>최근 7일</td><td {TD_C}><b>{counts.get('last_7d', 0)}</b></td></tr>"
+        t += f"<tr><td {TD}>최근 30일</td><td {TD_C}><b>{counts.get('last_30d', 0)}</b></td></tr>"
+        t += "</table>"
+        return t
+
+    html  = f"<p style='opacity:0.6;margin:0 0 12px'>📅 {date} &nbsp;·&nbsp; {as_of} 기준</p>"
+    html += tbl("🚶 행동 분석 (bhvr)", data.get("bhvr", {}))
+    html += tbl("🌊 재난 분석 (dst)", data.get("dst", {}))
+    return html
+
+
+def build_histogram(data: dict):
+    fig, ax = plt.subplots(figsize=(20, 10))
+    if "error" in data or not data.get("days"):
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    days = data["days"]
+    labels = [f"{d['date'][5:]}({d['label']})" for d in days]
+
+    all_ev = []
+    seen = set()
+    for d in days:
+        for k in d.get("events", {}):
+            if k not in seen:
+                all_ev.append(k)
+                seen.add(k)
+
+    colors = [
+        "#4C78A8", "#F58518", "#E45756", "#72B7B2",
+        "#54A24B", "#EECA3B", "#B279A2", "#FF9DA6",
+        "#9D755D", "#BAB0AC",
+    ]
+
+    bottoms = [0] * len(days)
+    for i, ev in enumerate(all_ev):
+        counts = [d.get("events", {}).get(ev, 0) for d in days]
+        ax.bar(labels, counts, bottom=bottoms,
+               label=ev, color=colors[i % len(colors)], width=0.6)
+        bottoms = [b + c for b, c in zip(bottoms, counts)]
+
+    ax.tick_params(axis="x", rotation=45, labelsize=16)
+    ax.tick_params(axis="y", labelsize=15)
+    ax.legend(loc="upper right", bbox_to_anchor=(1, 1.12),
+              ncol=len(all_ev), fontsize=15, framealpha=0.6,
+              markerscale=1.8, handlelength=2)
+    ax.set_title("최근 14일 행동 분석 이벤트", fontsize=18, pad=20)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def load_stats_tab():
+    today_html  = render_today_events(api_get("/api/stats/today",     {}))
+    summary_html = render_summary(api_get("/api/stats/summary",  {}))
+    histogram    = build_histogram(api_get("/api/stats/histogram", {}))
+    return today_html, summary_html, histogram
+
+
 # ── Search logic ──────────────────────────────────────────────────────────────
 
 def do_search(start_dt: str, end_dt: str, selected_events: list):
@@ -195,21 +291,36 @@ _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 _default_end   = _now.strftime("%Y-%m-%d %H:%M:%S")
 
-with gr.Blocks(title="Security Analytics Platform", theme=gr.themes.Soft()) as app:
+with gr.Blocks(title="Danusys Security Analytics", theme=gr.themes.Soft()) as app:
 
     with gr.Tabs() as tabs:
         with gr.Tab("🏠 Home", id=0):
             gr.HTML(
                 "<div style='text-align:center;padding:48px 0 24px'>"
+                "<p style='opacity:0.4;font-size:0.9rem;margin:0 0 4px;letter-spacing:0.12em'>DANUSYS</p>"
                 "<h1 style='font-size:2rem;margin-bottom:6px'>Security Analytics Platform</h1>"
                 "<p style='opacity:0.5;font-size:1rem'>보안 분석 플랫폼</p>"
                 "</div>"
             )
-            # 검색 카드 클릭 → 숨겨진 Gradio 버튼 트리거
             gr.HTML("""
                 <div style="display:flex;justify-content:center;gap:24px;padding:8px 0 32px">
 
-                  <div onclick="(function(){ var tabs=document.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('조희')){tabs[i].click();break;}} })()"
+                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('통계')){tabs[i].click();return;}} })()"
+                       style="width:180px;height:180px;border-radius:14px;
+                              border:2px solid rgba(99,190,123,0.6);
+                              background:rgba(99,190,123,0.08);
+                              display:flex;flex-direction:column;
+                              align-items:center;justify-content:center;
+                              gap:10px;cursor:pointer;user-select:none;
+                              transition:background 0.2s"
+                       onmouseover="this.style.background='rgba(99,190,123,0.18)'"
+                       onmouseout="this.style.background='rgba(99,190,123,0.08)'">
+                    <span style="font-size:2.4rem">📊</span>
+                    <span style="font-size:1.1rem;font-weight:600">통계</span>
+                    <span style="font-size:0.8rem;opacity:0.6">Statistics</span>
+                  </div>
+
+                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('조희')){tabs[i].click();return;}} })()"
                        style="width:180px;height:180px;border-radius:14px;
                               border:2px solid rgba(100,149,237,0.6);
                               background:rgba(100,149,237,0.08);
@@ -229,16 +340,6 @@ with gr.Blocks(title="Security Analytics Platform", theme=gr.themes.Soft()) as a
                               display:flex;flex-direction:column;
                               align-items:center;justify-content:center;
                               gap:10px;opacity:0.3;cursor:not-allowed">
-                    <span style="font-size:2.4rem">📊</span>
-                    <span style="font-size:1.1rem;font-weight:600">보고서</span>
-                    <span style="font-size:0.8rem">Reports</span>
-                  </div>
-
-                  <div style="width:180px;height:180px;border-radius:14px;
-                              border:2px dashed rgba(128,128,128,0.25);
-                              display:flex;flex-direction:column;
-                              align-items:center;justify-content:center;
-                              gap:10px;opacity:0.3;cursor:not-allowed">
                     <span style="font-size:2.4rem">⚙️</span>
                     <span style="font-size:1.1rem;font-weight:600">설정</span>
                     <span style="font-size:0.8rem">Settings</span>
@@ -246,7 +347,20 @@ with gr.Blocks(title="Security Analytics Platform", theme=gr.themes.Soft()) as a
 
                 </div>
             """)
-            home_search_btn = gr.Button(visible=False)
+
+        with gr.Tab("📊 통계", id=2):
+            gr.Markdown("## 통계 / Statistics")
+
+            with gr.Tabs():
+                with gr.Tab("오늘의 통계"):
+                    today_out = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
+
+                with gr.Tab("요약 / Summary"):
+                    summary_out = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
+
+                with gr.Tab("히스토그램 / Histogram"):
+                    histogram_out = gr.Plot(label="최근 14일 행동 분석 이벤트",
+                                           container=False)
 
         with gr.Tab("🔍 조희", id=1):
             gr.Markdown("## 조희 / Search")
@@ -286,7 +400,6 @@ with gr.Blocks(title="Security Analytics Platform", theme=gr.themes.Soft()) as a
                 with gr.Tab("🖥 Node Stats / 노드 통계"):
                     node_stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
 
-    home_search_btn.click(lambda: gr.Tabs(selected=1), outputs=tabs)
     btn_all.click(  lambda: ALL_EVENTS, outputs=events_check)
     btn_clear.click(lambda: [],         outputs=events_check)
     btn_search.click(
@@ -295,7 +408,12 @@ with gr.Blocks(title="Security Analytics Platform", theme=gr.themes.Soft()) as a
         outputs=[stats_out, list_out, node_stats_out],
     )
 
+    app.load(
+        load_stats_tab,
+        outputs=[today_out, summary_out, histogram_out],
+    )
+
 
 if __name__ == "__main__":
     print("\n  UI  →  http://localhost:7860\n")
-    app.launch(server_name="0.0.0.0", server_port=7860)
+    app.launch(server_name="0.0.0.0", server_port=7860,) #share=True
