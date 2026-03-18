@@ -6,31 +6,404 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
+from datetime import datetime, timedelta
+from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL
 
 sns.set_theme(style="whitegrid")
-plt.rcParams["font.family"] = "Malgun Gothic"
+plt.rcParams["font.family"]       = "Malgun Gothic"
 plt.rcParams["axes.unicode_minus"] = False
-from datetime import datetime, timedelta
-from config import ALL_EVENTS, API_BASE_URL
 
 
-# ── API helpers ───────────────────────────────────────────────────────────────
+# ── API helper ────────────────────────────────────────────────────────────────
 
-def api_get(path: str, params: dict) -> dict:
+def api_get(path: str, params: dict = None) -> dict:
     try:
-        r = requests.get(f"{API_BASE_URL}{path}", params=params, timeout=30)
+        r = requests.get(f"{API_BASE_URL}{path}", params=params or {}, timeout=30)
         r.raise_for_status()
         return r.json()
     except Exception as e:
         return {"error": str(e)}
 
 
-# ── HTML renderers ────────────────────────────────────────────────────────────
+# ── Stil sabitleri ────────────────────────────────────────────────────────────
 
 TH   = "style='border:1px solid rgba(128,128,128,0.4);padding:8px;background:rgba(128,128,128,0.15);text-align:left;font-weight:600'"
+TH_C = "style='border:1px solid rgba(128,128,128,0.4);padding:8px;background:rgba(128,128,128,0.15);text-align:center;font-weight:600'"
 TD   = "style='border:1px solid rgba(128,128,128,0.3);padding:8px'"
 TD_C = "style='border:1px solid rgba(128,128,128,0.3);padding:8px;text-align:center'"
 
+
+# ── 오늘의 통계 렌더러 ─────────────────────────────────────────────────────────
+
+def render_today_events(data: dict) -> str:
+    if "error" in data:
+        return f"<p style='color:red'>⚠ {data['error']}</p>"
+    events = data.get("events", [])
+    if not events:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    d     = data.get("date", "")
+    as_of = data.get("as_of", "")
+    html  = f"<p style='opacity:0.6;margin:0 0 8px'>📅 {d} &nbsp;·&nbsp; {as_of} 기준</p>"
+    html += "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%'>"
+    html += (
+        f"<tr>"
+        f"<th {TH}>이벤트</th>"
+        f"<th {TH_C}>오늘</th>"
+        f"<th {TH_C}>7일전</th>"
+        f"<th {TH_C}>14일전</th>"
+        f"<th {TH_C}>21일전</th>"
+        f"</tr>"
+    )
+    for row in events:
+        html += (
+            f"<tr>"
+            f"<td {TD}>{row['event']}</td>"
+            f"<td {TD_C}><b>{row['today']}</b></td>"
+            f"<td {TD_C}>{row['d7']}</td>"
+            f"<td {TD_C}>{row['d14']}</td>"
+            f"<td {TD_C}>{row['d21']}</td>"
+            f"</tr>"
+        )
+    html += "</table></div>"
+    return html
+
+
+def build_histogram(data: dict):
+    fig, ax = plt.subplots(figsize=(20, 10))
+    if "error" in data or not data.get("days"):
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    days   = data["days"]
+    labels = [f"{d['date'][5:]}({d['label']})" for d in days]
+
+    all_ev = []
+    seen   = set()
+    for d in days:
+        for k in d.get("events", {}):
+            if k not in seen:
+                all_ev.append(k)
+                seen.add(k)
+
+    colors = [
+        "#4C78A8", "#F58518", "#E45756", "#72B7B2",
+        "#54A24B", "#EECA3B", "#B279A2", "#FF9DA6",
+        "#9D755D", "#BAB0AC",
+    ]
+
+    bottoms = [0] * len(days)
+    for i, ev in enumerate(all_ev):
+        counts = [d.get("events", {}).get(ev, 0) for d in days]
+        ax.bar(labels, counts, bottom=bottoms,
+               label=ev, color=colors[i % len(colors)], width=0.6)
+        bottoms = [b + c for b, c in zip(bottoms, counts)]
+
+    ax.tick_params(axis="x", rotation=45, labelsize=16)
+    ax.tick_params(axis="y", labelsize=15)
+    ax.legend(loc="upper right", bbox_to_anchor=(1, 1.12),
+              ncol=len(all_ev), fontsize=15, framealpha=0.6,
+              markerscale=1.8, handlelength=2)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def load_today_tab():
+    today_html = render_today_events(api_get("/api/stats/today"))
+    histogram  = build_histogram(api_get("/api/stats/histogram"))
+    return today_html, histogram
+
+
+# ── 요약 렌더러 ───────────────────────────────────────────────────────────────
+
+def render_summary_counts(summary: dict, title: str) -> str:
+    html  = f"<h4 style='margin:0 0 8px'>{title}</h4>"
+    html += "<table style='border-collapse:collapse;width:300px'>"
+    html += f"<tr><th {TH}>기간</th><th {TH}>건수</th></tr>"
+    html += f"<tr><td {TD}>오늘</td><td {TD_C}><b>{summary.get('today', 0)}</b></td></tr>"
+    html += f"<tr><td {TD}>최근 7일</td><td {TD_C}><b>{summary.get('last_7d', 0)}</b></td></tr>"
+    html += f"<tr><td {TD}>최근 30일</td><td {TD_C}><b>{summary.get('last_30d', 0)}</b></td></tr>"
+    html += "</table>"
+    return html
+
+
+def build_line_chart(line_data: list, title: str):
+    fig, ax = plt.subplots(figsize=(20, 4))
+    if not line_data:
+        return fig
+
+    labels = [f"{d['date'][5:]}({d['label']})" for d in line_data]
+    totals = [d["total"] for d in line_data]
+    xs     = range(len(labels))
+
+    ax.plot(xs, totals, marker="o", linewidth=2.5, markersize=6, color="#4C78A8")
+    ax.fill_between(xs, totals, alpha=0.12, color="#4C78A8")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels, rotation=45, fontsize=12)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.set_title(title, fontsize=14, pad=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def render_detail_table(detail: list, events_list: list) -> str:
+    if not detail:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto;max-height:420px;overflow-y:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += "<tr>"
+    html += f"<th {TH}>날짜</th>"
+    html += f"<th {TH_C}>합계</th>"
+    for ev in events_list:
+        html += f"<th {TH_C}>{ev}</th>"
+    html += "</tr>"
+
+    for row in detail:
+        faded = " style='opacity:0.35'" if row.get("total", 0) == 0 else ""
+        html += f"<tr{faded}>"
+        html += f"<td {TD}>{row['date'][5:]}({row['label']})</td>"
+        t = row.get("total", 0)
+        html += f"<td {TD_C}><b>{t if t else ''}</b></td>"
+        for ev in events_list:
+            v = row.get(ev, 0)
+            html += f"<td {TD_C}>{v if v else ''}</td>"
+        html += "</tr>"
+
+    html += "</table></div>"
+    return html
+
+
+def load_summary_tab():
+    data      = api_get("/api/stats/summary")
+    empty_fig = plt.figure(figsize=(20, 4))
+
+    if "error" in data:
+        err = f"<p style='color:red'>⚠ {data['error']}</p>"
+        return err, empty_fig, err, err, empty_fig, err
+
+    bhvr = data.get("bhvr", {})
+    dst  = data.get("dst",  {})
+
+    return (
+        render_summary_counts(bhvr.get("summary", {}), "🚶 행동 분석 (bhvr) 요약"),
+        build_line_chart(bhvr.get("line", []), "행동 분석 일별 추이 (30일)"),
+        render_detail_table(bhvr.get("detail", []), BHVR_EVENTS),
+        render_summary_counts(dst.get("summary",  {}), "🌊 재난 분석 (dst) 요약"),
+        build_line_chart(dst.get("line",  []), "재난 분석 일별 추이 (30일)"),
+        render_detail_table(dst.get("detail",  []), DST_EVENTS),
+    )
+
+
+# ── 서버 통계 렌더러 ──────────────────────────────────────────────────────────
+
+def render_nodes_table(nodes: list) -> str:
+    if not nodes:
+        return "<p style='opacity:0.5'>등록된 노드 없음</p>"
+
+    api_json = json.dumps(API_BASE_URL)
+    html  = "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += (
+        f"<tr>"
+        f"<th {TH}>ID</th><th {TH}>Viewer Name</th><th {TH}>Node ID</th>"
+        f"<th {TH}>Management Code</th><th {TH}>Name</th><th {TH}>삭제</th>"
+        f"</tr>"
+    )
+    for r in nodes:
+        row_id  = r["id"]
+        onclick = htmllib.escape(
+            f"(async function(btn){{"
+            f"var res=await fetch({api_json}+'/api/server/nodes/{row_id}',{{method:'DELETE'}});"
+            f"if(res.ok)btn.closest('tr').remove();"
+            f"else alert('삭제 실패');"
+            f"}})(this)"
+        )
+        html += (
+            f"<tr>"
+            f"<td {TD_C}>{row_id}</td>"
+            f"<td {TD}>{r['viewer_name']}</td>"
+            f"<td {TD}>{r['node_id']}</td>"
+            f"<td {TD}>{r.get('management_code', '')}</td>"
+            f"<td {TD}>{r.get('name', '')}</td>"
+            f"<td {TD_C}>"
+            f"<button onclick=\"{onclick}\" style='padding:3px 10px;cursor:pointer;"
+            f"border-radius:4px;border:1px solid rgba(220,80,80,0.5);"
+            f"background:rgba(220,80,80,0.08);font-size:12px'>삭제</button>"
+            f"</td></tr>"
+        )
+    html += "</table></div>"
+    return html
+
+
+def render_server_stats(data: dict) -> str:
+    if "error" in data:
+        return f"<p style='color:red'>⚠ {data['error']}</p>"
+    viewers = data.get("viewers", [])
+    events  = data.get("events",  ALL_EVENTS)
+    if not viewers:
+        return "<p style='opacity:0.5'>데이터 없음 (노드 등록 필요)</p>"
+
+    html  = "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += "<tr>"
+    html += f"<th {TH}>Viewer Name</th>"
+    html += f"<th {TH_C}>합계</th>"
+    for ev in events:
+        html += f"<th {TH_C}>{ev}</th>"
+    html += "</tr>"
+
+    for v in viewers:
+        html += "<tr>"
+        html += f"<td {TD}><b>{v['viewer_name']}</b></td>"
+        html += f"<td {TD_C}><b>{v['total']}</b></td>"
+        for ev in events:
+            html += f"<td {TD_C}>{v['events'].get(ev, 0)}</td>"
+        html += "</tr>"
+
+    html += "</table></div>"
+    return html
+
+
+def build_server_line(data: dict):
+    """Tüm viewerları tek grafikte karşılaştıran line chart."""
+    viewers = data.get("viewers", []) if isinstance(data, dict) else []
+    if not viewers:
+        fig, ax = plt.subplots(figsize=(20, 4))
+        ax.axis("off")
+        return fig
+
+    colors = ["#4C78A8", "#F58518", "#E45756", "#72B7B2", "#54A24B", "#EECA3B"]
+    fig, ax = plt.subplots(figsize=(20, 4))
+    all_dates = None
+
+    for i, v in enumerate(viewers):
+        daily  = v.get("daily", [])
+        dates  = [d["date"][5:] for d in daily]
+        totals = [sum(d.get(e, 0) for e in ALL_EVENTS) for d in daily]
+        if all_dates is None:
+            all_dates = dates
+        ax.plot(range(len(dates)), totals, marker="o", linewidth=2.5, markersize=6,
+                color=colors[i % len(colors)], label=v["viewer_name"])
+
+    if all_dates:
+        ax.set_xticks(range(len(all_dates)))
+        ax.set_xticklabels(all_dates, rotation=45, fontsize=13)
+    ax.tick_params(axis="y", labelsize=12)
+    ax.legend(fontsize=13)
+    ax.set_title("뷰어 비교 — 일별 총 이벤트 (최근 14일)", fontsize=15, pad=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def build_server_histogram(data: dict):
+    viewers = data.get("viewers", []) if isinstance(data, dict) else []
+    events  = data.get("events",  ALL_EVENTS)
+
+    if not viewers:
+        fig, ax = plt.subplots(figsize=(20, 4))
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    n   = len(viewers)
+    fig, axes = plt.subplots(n, 1, figsize=(20, 5 * n), squeeze=False)
+
+    colors = [
+        "#4C78A8", "#F58518", "#E45756", "#72B7B2",
+        "#54A24B", "#EECA3B", "#B279A2", "#FF9DA6",
+        "#9D755D", "#BAB0AC",
+    ]
+
+    for i, v in enumerate(viewers):
+        ax     = axes[i][0]
+        daily  = v.get("daily", [])
+        labels = [d["date"][5:] for d in daily]
+
+        bottoms = [0] * len(daily)
+        drawn   = []
+        for j, ev in enumerate(events):
+            counts = [d.get(ev, 0) for d in daily]
+            if any(c > 0 for c in counts):
+                ax.bar(labels, counts, bottom=bottoms,
+                       label=ev, color=colors[j % len(colors)], width=0.6)
+                drawn.append(ev)
+            bottoms = [b + c for b, c in zip(bottoms, counts)]
+
+        ax.set_title(f"🖥  {v['viewer_name']}  (총 {v['total']}건)", fontsize=15, pad=10)
+        ax.tick_params(axis="x", rotation=45, labelsize=13)
+        ax.tick_params(axis="y", labelsize=12)
+        if drawn:
+            ax.legend(loc="upper right", bbox_to_anchor=(1, 1.12),
+                      ncol=len(drawn), fontsize=12, framealpha=0.6,
+                      markerscale=1.5)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    fig.tight_layout(h_pad=3)
+    return fig
+
+
+def load_server_nodes():
+    data = api_get("/api/server/nodes")
+    if "error" in data:
+        return f"<p style='color:red'>⚠ {data['error']}</p>"
+    return render_nodes_table(data.get("nodes", []))
+
+
+def do_import_excel(file_obj):
+    if file_obj is None:
+        return "<p style='color:orange'>파일을 선택하세요</p>", load_server_nodes()
+    file_path = file_obj.name if hasattr(file_obj, "name") else file_obj
+    try:
+        with open(file_path, "rb") as f:
+            r = requests.post(
+                f"{API_BASE_URL}/api/server/import",
+                files={"file": ("upload.xlsx", f,
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+                timeout=30,
+            )
+        if r.ok:
+            n = r.json().get("imported", 0)
+            return f"<p style='color:green'>✓ {n}건 임포트 완료</p>", load_server_nodes()
+        return f"<p style='color:red'>⚠ {r.text}</p>", load_server_nodes()
+    except Exception as e:
+        return f"<p style='color:red'>⚠ {e}</p>", load_server_nodes()
+
+
+def do_add_node(viewer, node_id, mgmt, name):
+    if not viewer.strip() or not node_id.strip():
+        return "<p style='color:orange'>Viewer Name과 Node ID는 필수입니다</p>", load_server_nodes()
+    try:
+        r = requests.post(
+            f"{API_BASE_URL}/api/server/nodes",
+            json={"viewer_name": viewer, "node_id": node_id,
+                  "management_code": mgmt, "name": name},
+            timeout=10,
+        )
+        if r.ok:
+            return "<p style='color:green'>✓ 추가 완료</p>", load_server_nodes()
+        return f"<p style='color:red'>⚠ {r.text}</p>", load_server_nodes()
+    except Exception as e:
+        return f"<p style='color:red'>⚠ {e}</p>", load_server_nodes()
+
+
+def do_load_server_stats():
+    data = api_get("/api/server/stats")
+    return render_server_stats(data), build_server_line(data), build_server_histogram(data)
+
+
+# ── 조희 렌더러 ───────────────────────────────────────────────────────────────
 
 def render_stats(data: dict) -> str:
     if "error" in data:
@@ -38,7 +411,7 @@ def render_stats(data: dict) -> str:
     events = data.get("events", [])
     if not events:
         return "<p style='opacity:0.5'>결과 없음 / No results</p>"
-    tr = data["time_range"]
+    tr   = data["time_range"]
     html  = f"<h3>📅 {tr['start']} ~ {tr['end']}</h3>"
     html += "<table style='border-collapse:collapse;width:400px'>"
     html += f"<tr><th {TH}>Event / 이벤트</th><th {TH}>Count / 건수</th></tr>"
@@ -100,8 +473,8 @@ def _node_btn_onclick(node_id: str, ch: str, start_dt: str, end_dt: str, events:
     tdc_s = "border:1px solid rgba(128,128,128,0.3);padding:6px;text-align:center"
 
     js_lines = [
-        "(async function(){",
-        "  var b=document.getElementById('nd-result');",
+        "(async function(btn){",
+        "  var b=btn.closest('tr').querySelector('.nd-result');",
         "  if(!b)return;",
         "  b.style.display='block';",
         "  b.innerHTML='<p>불러오는 중...</p>';",
@@ -124,7 +497,7 @@ def _node_btn_onclick(node_id: str, ch: str, start_dt: str, end_dt: str, events:
         "    }else{h+='<p>데이터 없음</p>';}",
         "    b.innerHTML=h;",
         "  }catch(err){b.innerHTML='<p style=\"color:red\">오류: '+err.message+'</p>';}",
-        "})();",
+        "})(this);",
     ]
     return htmllib.escape("".join(js_lines))
 
@@ -153,129 +526,31 @@ def render_node_stats(data: dict, start_dt: str, end_dt: str, selected_events: l
             f"background:rgba(128,128,128,0.1);font-size:13px'>"
             f"자세히 보기</button>"
             f"</td>"
+            f"<td class='nd-result'"
+            f" style='display:none;padding:8px;vertical-align:top;"
+            f"border:1px solid rgba(128,128,128,0.3);border-radius:4px;min-width:160px'>"
+            f"</td>"
             f"</tr>"
         )
 
     return (
         f"<table style='border-collapse:collapse;width:100%'>"
         f"<tr>"
-        f"<th {TH}>Node ID</th>"
-        f"<th {TH}>Channel</th>"
-        f"<th {TH}>Total Events / 총 건수</th>"
-        f"<th {TH}>Detail / 상세</th>"
+        f"<th {TH}>Node ID</th><th {TH}>Channel</th>"
+        f"<th {TH}>Total Events / 총 건수</th><th {TH}>Detail / 상세</th>"
+        f"<th {TH}>결과</th>"
         f"</tr>"
         f"{rows_html}"
         f"</table>"
-        f"<div id='nd-result'"
-        f" style='margin-top:14px;padding:12px;"
-        f"border:1px solid rgba(128,128,128,0.3);"
-        f"border-radius:6px;display:none'></div>"
     )
 
-
-# ── Stats tab renderers ───────────────────────────────────────────────────────
-
-def render_today_events(data: dict) -> str:
-    if "error" in data:
-        return f"<p style='color:red'>⚠ {data['error']}</p>"
-    events = data.get("events", [])
-    if not events:
-        return "<p style='opacity:0.5'>데이터 없음</p>"
-
-    d     = data.get("date", "")
-    as_of = data.get("as_of", "")
-    html  = f"<p style='opacity:0.6;margin:0 0 8px'>📅 {d} &nbsp;·&nbsp; {as_of} 기준</p>"
-    html += "<table style='border-collapse:collapse;width:360px'>"
-    html += f"<tr><th {TH}>이벤트</th><th {TH}>건수</th></tr>"
-    for row in events:
-        html += f"<tr><td {TD}>{row['event']}</td><td {TD_C}><b>{row['count']}</b></td></tr>"
-    html += "</table>"
-    return html
-
-
-def render_summary(data: dict) -> str:
-    if "error" in data:
-        return f"<p style='color:red'>⚠ {data['error']}</p>"
-
-    as_of = data.get("as_of", "")
-    date  = data.get("date", "")
-
-    def tbl(title: str, counts: dict) -> str:
-        t  = f"<h4 style='margin:0 0 6px'>{title}</h4>"
-        t += "<table style='border-collapse:collapse;width:320px;margin-bottom:16px'>"
-        t += f"<tr><th {TH}>기간</th><th {TH}>건수</th></tr>"
-        t += f"<tr><td {TD}>오늘</td><td {TD_C}><b>{counts.get('today', 0)}</b></td></tr>"
-        t += f"<tr><td {TD}>최근 7일</td><td {TD_C}><b>{counts.get('last_7d', 0)}</b></td></tr>"
-        t += f"<tr><td {TD}>최근 30일</td><td {TD_C}><b>{counts.get('last_30d', 0)}</b></td></tr>"
-        t += "</table>"
-        return t
-
-    html  = f"<p style='opacity:0.6;margin:0 0 12px'>📅 {date} &nbsp;·&nbsp; {as_of} 기준</p>"
-    html += tbl("🚶 행동 분석 (bhvr)", data.get("bhvr", {}))
-    html += tbl("🌊 재난 분석 (dst)", data.get("dst", {}))
-    return html
-
-
-def build_histogram(data: dict):
-    fig, ax = plt.subplots(figsize=(20, 10))
-    if "error" in data or not data.get("days"):
-        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
-                transform=ax.transAxes, fontsize=14, color="gray")
-        ax.axis("off")
-        return fig
-
-    days = data["days"]
-    labels = [f"{d['date'][5:]}({d['label']})" for d in days]
-
-    all_ev = []
-    seen = set()
-    for d in days:
-        for k in d.get("events", {}):
-            if k not in seen:
-                all_ev.append(k)
-                seen.add(k)
-
-    colors = [
-        "#4C78A8", "#F58518", "#E45756", "#72B7B2",
-        "#54A24B", "#EECA3B", "#B279A2", "#FF9DA6",
-        "#9D755D", "#BAB0AC",
-    ]
-
-    bottoms = [0] * len(days)
-    for i, ev in enumerate(all_ev):
-        counts = [d.get("events", {}).get(ev, 0) for d in days]
-        ax.bar(labels, counts, bottom=bottoms,
-               label=ev, color=colors[i % len(colors)], width=0.6)
-        bottoms = [b + c for b, c in zip(bottoms, counts)]
-
-    ax.tick_params(axis="x", rotation=45, labelsize=16)
-    ax.tick_params(axis="y", labelsize=15)
-    ax.legend(loc="upper right", bbox_to_anchor=(1, 1.12),
-              ncol=len(all_ev), fontsize=15, framealpha=0.6,
-              markerscale=1.8, handlelength=2)
-    ax.set_title("최근 14일 행동 분석 이벤트", fontsize=18, pad=20)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-def load_stats_tab():
-    today_html  = render_today_events(api_get("/api/stats/today",     {}))
-    summary_html = render_summary(api_get("/api/stats/summary",  {}))
-    histogram    = build_histogram(api_get("/api/stats/histogram", {}))
-    return today_html, summary_html, histogram
-
-
-# ── Search logic ──────────────────────────────────────────────────────────────
 
 def do_search(start_dt: str, end_dt: str, selected_events: list):
     if not selected_events:
         msg = "<p style='color:orange'>⚠ 이벤트를 하나 이상 선택하세요</p>"
         return msg, msg, msg
 
-    params = {"start_dt": start_dt, "end_dt": end_dt, "events": selected_events}
-
+    params     = {"start_dt": start_dt, "end_dt": end_dt, "events": selected_events}
     stats_html = render_stats(api_get("/api/search/stats", params))
     list_html  = render_list(api_get("/api/search/list",   params))
     node_html  = render_node_stats(
@@ -285,27 +560,32 @@ def do_search(start_dt: str, end_dt: str, selected_events: list):
     return stats_html, list_html, node_html
 
 
-# ── Gradio layout ─────────────────────────────────────────────────────────────
+# ── Gradio 레이아웃 ───────────────────────────────────────────────────────────
 
 _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 _default_end   = _now.strftime("%Y-%m-%d %H:%M:%S")
 
-with gr.Blocks(title="Danusys Security Analytics", theme=gr.themes.Soft()) as app:
+with gr.Blocks(title="Danusys Event Analytics", theme=gr.themes.Soft()) as app:
 
     with gr.Tabs() as tabs:
+
+        # ── Tab 0: Home ──────────────────────────────────────────────────────
         with gr.Tab("🏠 Home", id=0):
             gr.HTML(
                 "<div style='text-align:center;padding:48px 0 24px'>"
-                "<p style='opacity:0.4;font-size:0.9rem;margin:0 0 4px;letter-spacing:0.12em'>DANUSYS</p>"
-                "<h1 style='font-size:2rem;margin-bottom:6px'>Security Analytics Platform</h1>"
-                "<p style='opacity:0.5;font-size:1rem'>보안 분석 플랫폼</p>"
+                "<div style='display:inline-block;"
+                "background:#1a4fa3;color:#ffffff;"
+                "font-size:1.6rem;font-weight:700;letter-spacing:0.18em;"
+                "padding:6px 22px;border-radius:6px;margin-bottom:14px'>"
+                "DANUSYS</div>"
+                "<h1 style='font-size:2rem;margin-bottom:6px'>Event Analytics Platform</h1>"
                 "</div>"
             )
             gr.HTML("""
                 <div style="display:flex;justify-content:center;gap:24px;padding:8px 0 32px">
 
-                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('통계')){tabs[i].click();return;}} })()"
+                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('오늘의')){tabs[i].click();return;}} })()"
                        style="width:180px;height:180px;border-radius:14px;
                               border:2px solid rgba(99,190,123,0.6);
                               background:rgba(99,190,123,0.08);
@@ -316,8 +596,23 @@ with gr.Blocks(title="Danusys Security Analytics", theme=gr.themes.Soft()) as ap
                        onmouseover="this.style.background='rgba(99,190,123,0.18)'"
                        onmouseout="this.style.background='rgba(99,190,123,0.08)'">
                     <span style="font-size:2.4rem">📊</span>
-                    <span style="font-size:1.1rem;font-weight:600">통계</span>
-                    <span style="font-size:0.8rem;opacity:0.6">Statistics</span>
+                    <span style="font-size:1.1rem;font-weight:600">오늘의 통계</span>
+                    <span style="font-size:0.8rem;opacity:0.6">Today Stats</span>
+                  </div>
+
+                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('서버')){tabs[i].click();return;}} })()"
+                       style="width:180px;height:180px;border-radius:14px;
+                              border:2px solid rgba(147,112,219,0.6);
+                              background:rgba(147,112,219,0.08);
+                              display:flex;flex-direction:column;
+                              align-items:center;justify-content:center;
+                              gap:10px;cursor:pointer;user-select:none;
+                              transition:background 0.2s"
+                       onmouseover="this.style.background='rgba(147,112,219,0.18)'"
+                       onmouseout="this.style.background='rgba(147,112,219,0.08)'">
+                    <span style="font-size:2.4rem">🖥</span>
+                    <span style="font-size:1.1rem;font-weight:600">서버 통계</span>
+                    <span style="font-size:0.8rem;opacity:0.6">Server Stats</span>
                   </div>
 
                   <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('조희')){tabs[i].click();return;}} })()"
@@ -348,21 +643,63 @@ with gr.Blocks(title="Danusys Security Analytics", theme=gr.themes.Soft()) as ap
                 </div>
             """)
 
-        with gr.Tab("📊 통계", id=2):
-            gr.Markdown("## 통계 / Statistics")
+        # ── Tab 1: 오늘의 통계 ────────────────────────────────────────────────
+        with gr.Tab("📊 오늘의 통계", id=1):
+            gr.Markdown("## 오늘의 통계 / Today Stats")
+            btn_refresh_today = gr.Button("🔄 새로고침", size="sm")
+            today_out         = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
+            gr.Markdown("---")
+            gr.Markdown("### 최근 14일 통계")
+            histogram_out = gr.Plot(container=False)
+
+        # ── Tab 2: 요약 ──────────────────────────────────────────────────────
+        with gr.Tab("📈 요약", id=2):
+            gr.Markdown("## 요약 / Summary")
+            btn_refresh_summary = gr.Button("🔄 새로고침", size="sm")
 
             with gr.Tabs():
-                with gr.Tab("오늘의 통계"):
-                    today_out = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
+                with gr.Tab("🚶 행동 분석 (bhvr)"):
+                    bhvr_sum_out    = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
+                    bhvr_line_out   = gr.Plot(container=False)
+                    bhvr_detail_out = gr.HTML()
 
-                with gr.Tab("요약 / Summary"):
-                    summary_out = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
+                with gr.Tab("🌊 재난 분석 (dst)"):
+                    dst_sum_out    = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
+                    dst_line_out   = gr.Plot(container=False)
+                    dst_detail_out = gr.HTML()
 
-                with gr.Tab("히스토그램 / Histogram"):
-                    histogram_out = gr.Plot(label="최근 14일 행동 분석 이벤트",
-                                           container=False)
+        # ── Tab 3: 서버 통계 ──────────────────────────────────────────────────
+        with gr.Tab("🖥 서버 통계", id=3):
+            gr.Markdown("## 서버 통계 / Server Stats")
 
-        with gr.Tab("🔍 조희", id=1):
+            gr.Markdown("### 노드 관리")
+            with gr.Row():
+                excel_file = gr.File(label="Excel 파일 (.xlsx)", file_types=[".xlsx"])
+                btn_import = gr.Button("📥 Import", variant="primary", scale=1)
+            import_result = gr.HTML("")
+
+            with gr.Row():
+                btn_refresh_nodes = gr.Button("🔄 노드 목록 새로고침", size="sm")
+            nodes_out = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
+
+            gr.Markdown("### 수동 추가")
+            with gr.Row():
+                inp_viewer = gr.Textbox(label="Viewer Name",      placeholder="danuai56")
+                inp_node   = gr.Textbox(label="Node ID",          placeholder="NODE001")
+                inp_mgmt   = gr.Textbox(label="Management Code")
+                inp_name   = gr.Textbox(label="Name")
+            btn_add    = gr.Button("➕ 추가", variant="secondary")
+            add_result = gr.HTML("")
+
+            gr.Markdown("---")
+            gr.Markdown("### 뷰어별 통계 (최근 14일)")
+            btn_load_srv  = gr.Button("📊 통계 조회", variant="primary")
+            srv_stats_out = gr.HTML("<p style='opacity:0.5'>위 버튼을 눌러 조회하세요</p>")
+            srv_line_out  = gr.Plot(container=False, label="뷰어 비교 (line)")
+            srv_hist_out  = gr.Plot(container=False, label="뷰어별 상세 (histogram)")
+
+        # ── Tab 4: 조희 ──────────────────────────────────────────────────────
+        with gr.Tab("🔍 조희", id=4):
             gr.Markdown("## 조희 / Search")
 
             with gr.Row():
@@ -393,12 +730,32 @@ with gr.Blocks(title="Danusys Security Analytics", theme=gr.themes.Soft()) as ap
             with gr.Tabs():
                 with gr.Tab("📊 Stats / 통계"):
                     stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
-
                 with gr.Tab("📋 List / 목록"):
                     list_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
-
                 with gr.Tab("🖥 Node Stats / 노드 통계"):
                     node_stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
+
+    # ── 이벤트 연결 ───────────────────────────────────────────────────────────
+
+    _today_outs   = [today_out, histogram_out]
+    _summary_outs = [bhvr_sum_out, bhvr_line_out, bhvr_detail_out,
+                     dst_sum_out,  dst_line_out,  dst_detail_out]
+
+    btn_refresh_today.click(load_today_tab,   outputs=_today_outs)
+    btn_refresh_summary.click(load_summary_tab, outputs=_summary_outs)
+
+    btn_import.click(
+        do_import_excel,
+        inputs=[excel_file],
+        outputs=[import_result, nodes_out],
+    )
+    btn_refresh_nodes.click(load_server_nodes, outputs=[nodes_out])
+    btn_add.click(
+        do_add_node,
+        inputs=[inp_viewer, inp_node, inp_mgmt, inp_name],
+        outputs=[add_result, nodes_out],
+    )
+    btn_load_srv.click(do_load_server_stats, outputs=[srv_stats_out, srv_line_out, srv_hist_out])
 
     btn_all.click(  lambda: ALL_EVENTS, outputs=events_check)
     btn_clear.click(lambda: [],         outputs=events_check)
@@ -408,12 +765,11 @@ with gr.Blocks(title="Danusys Security Analytics", theme=gr.themes.Soft()) as ap
         outputs=[stats_out, list_out, node_stats_out],
     )
 
-    app.load(
-        load_stats_tab,
-        outputs=[today_out, summary_out, histogram_out],
-    )
+    app.load(load_today_tab,   outputs=_today_outs)
+    app.load(load_summary_tab, outputs=_summary_outs)
+    app.load(load_server_nodes, outputs=[nodes_out])
 
 
 if __name__ == "__main__":
     print("\n  UI  →  http://localhost:7860\n")
-    app.launch(server_name="0.0.0.0", server_port=7860,) #share=True
+    app.launch(server_name="0.0.0.0", server_port=7860)

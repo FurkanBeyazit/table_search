@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from datetime import date, datetime, timedelta
 
 import database
-from config import BHVR_TABLE, DST_TABLE, EVENT_COL, ALL_EVENTS
+from config import BHVR_TABLE, DST_TABLE, EVENT_COL, ALL_EVENTS, BHVR_EVENTS, DST_EVENTS
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
@@ -11,63 +11,129 @@ KR_DAYS = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
 
 @router.get("/today")
 def get_today():
-    """오늘 00:00 ~ 현재 시각까지 event 별 건수 (bhvr + dst 합산)."""
+    """오늘 / 7일 / 14일 / 21일 event별 건수 (bhvr + dst 합산)."""
     today = date.today()
-    rows = database.run_query(
-        f"SELECT {EVENT_COL} AS et, COUNT(*) AS cnt FROM {BHVR_TABLE} "
-        f"WHERE reg_dt >= %s GROUP BY {EVENT_COL} "
-        f"UNION ALL "
-        f"SELECT {EVENT_COL} AS et, COUNT(*) AS cnt FROM {DST_TABLE} "
-        f"WHERE reg_dt >= %s GROUP BY {EVENT_COL}",
-        [today, today],
-    )
-    agg = {}
-    for r in rows:
-        agg[r["et"]] = agg.get(r["et"], 0) + r["cnt"]
 
-    # ALL_EVENTS 순서로 정렬, 0건도 포함
-    events = [{"event": e, "count": agg.get(e, 0)} for e in ALL_EVENTS]
+    def query_table(table):
+        return database.run_query(
+            f"SELECT {EVENT_COL} AS et, "
+            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date)                      AS today, "
+            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '7 days')  AS d7, "
+            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '14 days') AS d14, "
+            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '21 days') AS d21 "
+            f"FROM {table} "
+            f"WHERE reg_dt >= %s::date - INTERVAL '21 days' "
+            f"GROUP BY {EVENT_COL}",
+            [today, today, today, today, today],
+        )
+
+    agg = {}
+    for r in query_table(BHVR_TABLE) + query_table(DST_TABLE):
+        et = r["et"]
+        if et not in agg:
+            agg[et] = {"today": 0, "d7": 0, "d14": 0, "d21": 0}
+        agg[et]["today"] += r["today"] or 0
+        agg[et]["d7"]    += r["d7"]    or 0
+        agg[et]["d14"]   += r["d14"]   or 0
+        agg[et]["d21"]   += r["d21"]   or 0
+
+    events = [{
+        "event": e,
+        "today": agg.get(e, {}).get("today", 0),
+        "d7":    agg.get(e, {}).get("d7",    0),
+        "d14":   agg.get(e, {}).get("d14",   0),
+        "d21":   agg.get(e, {}).get("d21",   0),
+    } for e in ALL_EVENTS]
 
     return {
-        "date":  str(today),
-        "as_of": datetime.now().strftime("%H:%M"),
+        "date":   str(today),
+        "as_of":  datetime.now().strftime("%H:%M"),
         "events": events,
     }
 
 
 @router.get("/summary")
 def get_summary():
-    """bhvr / dst 테이블 각각 오늘 · 7일 · 30일 총 건수."""
-    today = date.today()
-    now   = datetime.now()
+    """bhvr / dst 각각 오늘·7일·30일 요약 + 30일 일별 line + 30일 일별 상세."""
+    today  = date.today()
+    now    = datetime.now()
+    start30 = today - timedelta(days=29)
 
-    def table_counts(table):
-        rows = database.run_query(
+    def table_data(table, events_list):
+        # 요약 counts
+        s = database.run_query(
             f"SELECT "
-            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date)                        AS today, "
-            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '7 days')    AS d7, "
-            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '30 days')   AS d30 "
+            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date)                      AS today, "
+            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '7 days')  AS d7, "
+            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '30 days') AS d30 "
             f"FROM {table} WHERE reg_dt >= %s::date - INTERVAL '30 days'",
             [today, today, today, today],
         )
-        r = rows[0] if rows else {}
-        return {
-            "today":    int(r.get("today", 0)),
-            "last_7d":  int(r.get("d7",    0)),
-            "last_30d": int(r.get("d30",   0)),
+        r = s[0] if s else {}
+        summary = {
+            "today":    int(r.get("today", 0) or 0),
+            "last_7d":  int(r.get("d7",    0) or 0),
+            "last_30d": int(r.get("d30",   0) or 0),
         }
+
+        # 일별 합계 (line chart용)
+        daily_rows = database.run_query(
+            f"SELECT DATE(reg_dt) AS day, COUNT(*) AS cnt "
+            f"FROM {table} "
+            f"WHERE reg_dt >= %s::date - INTERVAL '30 days' "
+            f"GROUP BY DATE(reg_dt) ORDER BY day",
+            [today],
+        )
+        daily_map = {str(r["day"]): int(r["cnt"]) for r in daily_rows}
+
+        line = []
+        for i in range(30):
+            d  = start30 + timedelta(days=i)
+            ds = str(d)
+            line.append({"date": ds, "label": KR_DAYS[d.weekday()], "total": daily_map.get(ds, 0)})
+
+        # 일별 event 상세
+        detail_rows = database.run_query(
+            f"SELECT DATE(reg_dt) AS day, {EVENT_COL} AS et, COUNT(*) AS cnt "
+            f"FROM {table} "
+            f"WHERE reg_dt >= %s::date - INTERVAL '30 days' "
+            f"GROUP BY DATE(reg_dt), {EVENT_COL} ORDER BY day",
+            [today],
+        )
+        detail_map = {}
+        for r in detail_rows:
+            ds = str(r["day"])
+            if ds not in detail_map:
+                detail_map[ds] = {}
+            detail_map[ds][r["et"]] = int(r["cnt"])
+
+        detail = []
+        for i in range(30):
+            d  = start30 + timedelta(days=i)
+            ds = str(d)
+            row = {"date": ds, "label": KR_DAYS[d.weekday()]}
+            day_ev = detail_map.get(ds, {})
+            total  = 0
+            for ev in events_list:
+                cnt = day_ev.get(ev, 0)
+                row[ev] = cnt
+                total  += cnt
+            row["total"] = total
+            detail.append(row)
+
+        return {"summary": summary, "line": line, "detail": detail}
 
     return {
         "as_of": now.strftime("%H:%M"),
         "date":  str(today),
-        "bhvr":  table_counts(BHVR_TABLE),
-        "dst":   table_counts(DST_TABLE),
+        "bhvr":  table_data(BHVR_TABLE, BHVR_EVENTS),
+        "dst":   table_data(DST_TABLE,  DST_EVENTS),
     }
 
 
 @router.get("/histogram")
 def get_histogram():
-    """최근 14일 bhvr 테이블 일별 · event별 건수 (히스토그램용)."""
+    """최근 14일 bhvr 테이블 일별·event별 건수."""
     today = date.today()
     start = today - timedelta(days=13)
 
@@ -80,7 +146,6 @@ def get_histogram():
         [start],
     )
 
-    # 날짜별 딕셔너리로 정리
     day_map = {}
     for r in rows:
         k = str(r["day"])
@@ -90,12 +155,8 @@ def get_histogram():
 
     days = []
     for i in range(14):
-        d = start + timedelta(days=i)
+        d  = start + timedelta(days=i)
         ds = str(d)
-        days.append({
-            "date":   ds,
-            "label":  KR_DAYS[d.weekday()],
-            "events": day_map.get(ds, {}),
-        })
+        days.append({"date": ds, "label": KR_DAYS[d.weekday()], "events": day_map.get(ds, {})})
 
     return {"days": days}

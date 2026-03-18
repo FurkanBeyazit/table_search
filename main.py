@@ -1,18 +1,27 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import search, stats
+from routers import search, stats, server
+
+import database
 
 app = FastAPI(title="Security Analytics Platform")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
 app.include_router(search.router)
 app.include_router(stats.router)
+app.include_router(server.router)
+
+
+@app.on_event("startup")
+def startup():
+    database.init_db()
+
 
 if __name__ == "__main__":
     import uvicorn

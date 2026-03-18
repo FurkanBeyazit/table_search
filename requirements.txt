@@ -6,3 +6,6 @@ requests
 Pillow
 matplotlib
 seaborn
+pandas
+openpyxl
+python-multipart
