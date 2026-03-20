@@ -54,28 +54,35 @@ def parse_dtct_dt(val) -> str:
         return str(val)
 
 
-def build_base_sql(events: List[str], start_dt: str, end_dt: str):
+def build_base_sql(events: List[str], start_dt: str, end_dt: str, node_ids: List[str] = None):
     bhvr = [e for e in events if e in BHVR_EVENTS]
     dst  = [e for e in events if e in DST_EVENTS]
     parts, params = [], []
+
+    node_clause = ""
+    node_params = []
+    if node_ids:
+        ph = ", ".join(["%s"] * len(node_ids))
+        node_clause = f" AND CAST(node_id AS TEXT) IN ({ph})"
+        node_params = node_ids
 
     if bhvr:
         ph = ", ".join(["%s"] * len(bhvr))
         parts.append(
             f"SELECT node_id, ch, reg_dt, dtct_dt, img_path, {EVENT_COL} AS event_type "
             f"FROM {BHVR_TABLE} "
-            f"WHERE reg_dt BETWEEN %s AND %s AND {EVENT_COL} IN ({ph})"
+            f"WHERE reg_dt BETWEEN %s AND %s AND {EVENT_COL} IN ({ph}){node_clause}"
         )
-        params += [start_dt, end_dt] + bhvr
+        params += [start_dt, end_dt] + bhvr + node_params
 
     if dst:
         ph = ", ".join(["%s"] * len(dst))
         parts.append(
             f"SELECT node_id, ch, reg_dt, dtct_dt, img_path, {EVENT_COL} AS event_type "
             f"FROM {DST_TABLE} "
-            f"WHERE reg_dt BETWEEN %s AND %s AND {EVENT_COL} IN ({ph})"
+            f"WHERE reg_dt BETWEEN %s AND %s AND {EVENT_COL} IN ({ph}){node_clause}"
         )
-        params += [start_dt, end_dt] + dst
+        params += [start_dt, end_dt] + dst + node_params
 
     if not parts:
         return None, []
@@ -125,9 +132,10 @@ def get_stats(
     start_dt: str,
     end_dt: str,
     events: List[str] = Query(default=ALL_EVENTS),
+    node_ids: List[str] = Query(default=None, alias="node_id"),
 ):
     start_dt, end_dt = parse_dt_param(start_dt), parse_dt_param(end_dt)
-    base, params = build_base_sql(events, start_dt, end_dt)
+    base, params = build_base_sql(events, start_dt, end_dt, node_ids or [])
     if not base:
         return {"time_range": {"start": start_dt, "end": end_dt}, "events": []}
 
@@ -148,20 +156,38 @@ def get_list(
     start_dt: str,
     end_dt: str,
     events: List[str] = Query(default=ALL_EVENTS),
+    node_ids: List[str] = Query(default=None, alias="node_id"),
 ):
     start_dt, end_dt = parse_dt_param(start_dt), parse_dt_param(end_dt)
-    base, params = build_base_sql(events, start_dt, end_dt)
+    base, params = build_base_sql(events, start_dt, end_dt, node_ids or [])
     if not base:
         return {"records": []}
 
     sql = f"SELECT * FROM ({base}) t ORDER BY reg_dt DESC LIMIT 100"
     rows = database.run_query(sql, params)
+
+    # node_id → name lookup from t_viewer_node
+    name_map = {}
+    if rows:
+        ids = list({str(r["node_id"]) for r in rows})
+        ph  = ",".join(["%s"] * len(ids))
+        try:
+            name_rows = database.run_query(
+                f"SELECT DISTINCT ON (CAST(node_id AS TEXT)) "
+                f"CAST(node_id AS TEXT) AS nid, name "
+                f"FROM t_viewer_node WHERE CAST(node_id AS TEXT) IN ({ph})",
+                ids,
+            )
+            name_map = {r["nid"]: r["name"] for r in name_rows}
+        except Exception:
+            pass
+
     return {
         "records": [
             {
                 "node_id":   r["node_id"],
+                "node_name": name_map.get(str(r["node_id"]), ""),
                 "ch":        r["ch"],
-                "reg_dt":    str(r["reg_dt"]),
                 "dtct_dt":   parse_dtct_dt(r.get("dtct_dt")),
                 "event":     r["event_type"],
                 "img_url":   img_to_api_url(r.get("img_path", "")),
@@ -177,9 +203,10 @@ def get_node_stats(
     start_dt: str,
     end_dt: str,
     events: List[str] = Query(default=ALL_EVENTS),
+    node_ids: List[str] = Query(default=None, alias="node_id"),
 ):
     start_dt, end_dt = parse_dt_param(start_dt), parse_dt_param(end_dt)
-    base, params = build_base_sql(events, start_dt, end_dt)
+    base, params = build_base_sql(events, start_dt, end_dt, node_ids or [])
     if not base:
         return {"nodes": []}
 

@@ -298,7 +298,7 @@ def build_server_line(data: dict):
         ax.set_xticklabels(all_dates, rotation=45, fontsize=13)
     ax.tick_params(axis="y", labelsize=12)
     ax.legend(fontsize=13)
-    ax.set_title("뷰어 비교 — 일별 총 이벤트 (최근 14일)", fontsize=15, pad=12)
+    ax.set_title("일별 총 이벤트 (최근 14일)", fontsize=15, pad=12)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     fig.tight_layout()
@@ -354,16 +354,23 @@ def build_server_histogram(data: dict):
     return fig
 
 
-def load_server_nodes():
+def get_viewer_names() -> list:
     data = api_get("/api/server/nodes")
-    if "error" in data:
-        return f"<p style='color:red'>⚠ {data['error']}</p>"
-    return render_nodes_table(data.get("nodes", []))
+    nodes = data.get("nodes", [])
+    return sorted(set(n["viewer_name"] for n in nodes if n.get("viewer_name")))
+
+
+def do_load_nodes_by_viewer(viewer_name: str) -> str:
+    data  = api_get("/api/server/nodes")
+    nodes = data.get("nodes", [])
+    if viewer_name:
+        nodes = [n for n in nodes if n.get("viewer_name") == viewer_name]
+    return render_nodes_table(nodes)
 
 
 def do_import_excel(file_obj):
     if file_obj is None:
-        return "<p style='color:orange'>파일을 선택하세요</p>", load_server_nodes()
+        return "<p style='color:orange'>파일을 선택하세요</p>", gr.update(), ""
     file_path = file_obj.name if hasattr(file_obj, "name") else file_obj
     try:
         with open(file_path, "rb") as f:
@@ -374,16 +381,23 @@ def do_import_excel(file_obj):
                 timeout=30,
             )
         if r.ok:
-            n = r.json().get("imported", 0)
-            return f"<p style='color:green'>✓ {n}건 임포트 완료</p>", load_server_nodes()
-        return f"<p style='color:red'>⚠ {r.text}</p>", load_server_nodes()
+            n       = r.json().get("imported", 0)
+            viewers = get_viewer_names()
+            first   = viewers[0] if viewers else None
+            nodes_html = do_load_nodes_by_viewer(first) if first else ""
+            return (
+                f"<p style='color:green'>✓ {n}건 임포트 완료 &nbsp;·&nbsp; 뷰어 {len(viewers)}개</p>",
+                gr.update(choices=viewers, value=first),
+                nodes_html,
+            )
+        return f"<p style='color:red'>⚠ {r.text}</p>", gr.update(), ""
     except Exception as e:
-        return f"<p style='color:red'>⚠ {e}</p>", load_server_nodes()
+        return f"<p style='color:red'>⚠ {e}</p>", gr.update(), ""
 
 
 def do_add_node(viewer, node_id, mgmt, name):
     if not viewer.strip() or not node_id.strip():
-        return "<p style='color:orange'>Viewer Name과 Node ID는 필수입니다</p>", load_server_nodes()
+        return "<p style='color:orange'>Viewer Name과 Node ID는 필수입니다</p>", do_load_nodes_by_viewer(viewer)
     try:
         r = requests.post(
             f"{API_BASE_URL}/api/server/nodes",
@@ -392,10 +406,10 @@ def do_add_node(viewer, node_id, mgmt, name):
             timeout=10,
         )
         if r.ok:
-            return "<p style='color:green'>✓ 추가 완료</p>", load_server_nodes()
-        return f"<p style='color:red'>⚠ {r.text}</p>", load_server_nodes()
+            return "<p style='color:green'>✓ 추가 완료</p>", do_load_nodes_by_viewer(viewer)
+        return f"<p style='color:red'>⚠ {r.text}</p>", do_load_nodes_by_viewer(viewer)
     except Exception as e:
-        return f"<p style='color:red'>⚠ {e}</p>", load_server_nodes()
+        return f"<p style='color:red'>⚠ {e}</p>", do_load_nodes_by_viewer(viewer)
 
 
 def do_load_server_stats():
@@ -433,9 +447,9 @@ def render_list(data: dict) -> str:
     html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
     html += (
         f"<tr>"
-        f"<th {TH}>Node ID</th><th {TH}>Ch</th>"
-        f"<th {TH}>Reg Time</th><th {TH}>Detect Time (+9h)</th>"
-        f"<th {TH}>Event / 이벤트</th><th {TH}>Preview</th>"
+        f"<th {TH}>Node ID</th><th {TH}>Name</th><th {TH_C}>Ch</th>"
+        f"<th {TH}>Detect Time (+9h)</th>"
+        f"<th {TH}>Event / 이벤트</th><th {TH_C}>Preview</th>"
         f"</tr>"
     )
     for r in records:
@@ -452,9 +466,12 @@ def render_list(data: dict) -> str:
 
         html += (
             f"<tr>"
-            f"<td {TD}>{r['node_id']}</td><td {TD_C}>{r['ch']}</td>"
-            f"<td {TD}>{r['reg_dt']}</td><td {TD}>{r['dtct_dt']}</td>"
-            f"<td {TD}>{r['event']}</td><td {TD_C}>{img_tag}</td>"
+            f"<td {TD}>{r['node_id']}</td>"
+            f"<td {TD}>{r.get('node_name', '')}</td>"
+            f"<td {TD_C}>{r['ch']}</td>"
+            f"<td {TD}>{r['dtct_dt']}</td>"
+            f"<td {TD}>{r['event']}</td>"
+            f"<td {TD_C}>{img_tag}</td>"
             f"</tr>"
         )
     html += "</table></div>"
@@ -536,21 +553,26 @@ def render_node_stats(data: dict, start_dt: str, end_dt: str, selected_events: l
     return (
         f"<table style='border-collapse:collapse;width:100%'>"
         f"<tr>"
-        f"<th {TH}>Node ID</th><th {TH}>Channel</th>"
-        f"<th {TH}>Total Events / 총 건수</th><th {TH}>Detail / 상세</th>"
-        f"<th {TH}>결과</th>"
+        f"<th {TH}>Node ID</th><th {TH_C}>Channel</th>"
+        f"<th {TH_C}>Total Events / 총 건수</th><th {TH_C}>Detail / 상세</th>"
+        f"<th {TH_C}>결과</th>"
         f"</tr>"
         f"{rows_html}"
         f"</table>"
     )
 
 
-def do_search(start_dt: str, end_dt: str, selected_events: list):
+def do_search(start_dt: str, end_dt: str, selected_events: list, node_id_input: str):
     if not selected_events:
         msg = "<p style='color:orange'>⚠ 이벤트를 하나 이상 선택하세요</p>"
         return msg, msg, msg
 
-    params     = {"start_dt": start_dt, "end_dt": end_dt, "events": selected_events}
+    node_ids = [n.strip() for n in node_id_input.split(",") if n.strip()] if node_id_input else []
+
+    params = {"start_dt": start_dt, "end_dt": end_dt, "events": selected_events}
+    if node_ids:
+        params["node_id"] = node_ids
+
     stats_html = render_stats(api_get("/api/search/stats", params))
     list_html  = render_list(api_get("/api/search/list",   params))
     node_html  = render_node_stats(
@@ -566,7 +588,15 @@ _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
 _default_end   = _now.strftime("%Y-%m-%d %H:%M:%S")
 
-with gr.Blocks(title="Danusys Event Analytics", theme=gr.themes.Soft()) as app:
+_custom_css = """
+#excel-upload { max-width: 260px; }
+#excel-upload .wrap { min-height: 110px !important; padding: 10px 14px !important; }
+#excel-upload label span { font-size: 12px !important; }
+#import-btn { min-height: 110px !important; font-size: 15px !important; }
+#import-col { max-width: 150px; }
+"""
+
+with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css) as app:
 
     with gr.Tabs() as tabs:
 
@@ -579,7 +609,7 @@ with gr.Blocks(title="Danusys Event Analytics", theme=gr.themes.Soft()) as app:
                 "font-size:1.6rem;font-weight:700;letter-spacing:0.18em;"
                 "padding:6px 22px;border-radius:6px;margin-bottom:14px'>"
                 "DANUSYS</div>"
-                "<h1 style='font-size:2rem;margin-bottom:6px'>Event Analytics Platform</h1>"
+                "<h1 style='font-size:2rem;margin-bottom:6px'>Ainos Platform</h1>"
                 "</div>"
             )
             gr.HTML("""
@@ -630,14 +660,19 @@ with gr.Blocks(title="Danusys Event Analytics", theme=gr.themes.Soft()) as app:
                     <span style="font-size:0.8rem;opacity:0.6">Search</span>
                   </div>
 
-                  <div style="width:180px;height:180px;border-radius:14px;
-                              border:2px dashed rgba(128,128,128,0.25);
+                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('설정')){tabs[i].click();return;}} })()"
+                       style="width:180px;height:180px;border-radius:14px;
+                              border:2px solid rgba(255,165,0,0.6);
+                              background:rgba(255,165,0,0.08);
                               display:flex;flex-direction:column;
                               align-items:center;justify-content:center;
-                              gap:10px;opacity:0.3;cursor:not-allowed">
+                              gap:10px;cursor:pointer;user-select:none;
+                              transition:background 0.2s"
+                       onmouseover="this.style.background='rgba(255,165,0,0.18)'"
+                       onmouseout="this.style.background='rgba(255,165,0,0.08)'">
                     <span style="font-size:2.4rem">⚙️</span>
                     <span style="font-size:1.1rem;font-weight:600">설정</span>
-                    <span style="font-size:0.8rem">Settings</span>
+                    <span style="font-size:0.8rem;opacity:0.6">Settings</span>
                   </div>
 
                 </div>
@@ -670,29 +705,8 @@ with gr.Blocks(title="Danusys Event Analytics", theme=gr.themes.Soft()) as app:
 
         # ── Tab 3: 서버 통계 ──────────────────────────────────────────────────
         with gr.Tab("🖥 서버 통계", id=3):
-            gr.Markdown("## 서버 통계 / Server Stats")
-
-            gr.Markdown("### 노드 관리")
-            with gr.Row():
-                excel_file = gr.File(label="Excel 파일 (.xlsx)", file_types=[".xlsx"])
-                btn_import = gr.Button("📥 Import", variant="primary", scale=1)
-            import_result = gr.HTML("")
-
-            with gr.Row():
-                btn_refresh_nodes = gr.Button("🔄 노드 목록 새로고침", size="sm")
-            nodes_out = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
-
-            gr.Markdown("### 수동 추가")
-            with gr.Row():
-                inp_viewer = gr.Textbox(label="Viewer Name",      placeholder="danuai56")
-                inp_node   = gr.Textbox(label="Node ID",          placeholder="NODE001")
-                inp_mgmt   = gr.Textbox(label="Management Code")
-                inp_name   = gr.Textbox(label="Name")
-            btn_add    = gr.Button("➕ 추가", variant="secondary")
-            add_result = gr.HTML("")
-
-            gr.Markdown("---")
-            gr.Markdown("### 뷰어별 통계 (최근 14일)")
+            gr.Markdown("## 지능형 서버 통계 / Server Stats")
+            gr.Markdown("### 서버별 통계 (최근 14일)")
             btn_load_srv  = gr.Button("📊 통계 조회", variant="primary")
             srv_stats_out = gr.HTML("<p style='opacity:0.5'>위 버튼을 눌러 조회하세요</p>")
             srv_line_out  = gr.Plot(container=False, label="뷰어 비교 (line)")
@@ -713,6 +727,11 @@ with gr.Blocks(title="Danusys Event Analytics", theme=gr.themes.Soft()) as app:
                     value=_default_end,
                     placeholder="YYYY-MM-DD HH:MM:SS  또는  20260316235959",
                 )
+
+            node_id_input = gr.Textbox(
+                label="Node ID 필터 (쉼표로 구분, 비워두면 전체)",
+                placeholder="20882, 20883, 20884",
+            )
 
             events_check = gr.CheckboxGroup(
                 choices=ALL_EVENTS,
@@ -735,6 +754,44 @@ with gr.Blocks(title="Danusys Event Analytics", theme=gr.themes.Soft()) as app:
                 with gr.Tab("🖥 Node Stats / 노드 통계"):
                     node_stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
 
+        # ── Tab 5: 설정 ──────────────────────────────────────────────────────
+        with gr.Tab("⚙️ 설정", id=5):
+            gr.Markdown("## 설정 / Settings")
+
+            with gr.Tabs():
+                with gr.Tab("📥 Excel 업로드"):
+                    with gr.Row(equal_height=True):
+                        excel_file  = gr.File(
+                            label="Excel (.xlsx)",
+                            file_types=[".xlsx"],
+                            scale=0,
+                            elem_id="excel-upload",
+                        )
+                        with gr.Column(scale=0, elem_id="import-col", min_width=140):
+                            file_status = gr.HTML("")
+                            btn_import  = gr.Button("📥 Import", variant="primary", elem_id="import-btn")
+                        gr.HTML("")  # 나머지 공간 채우기 방지용
+                    import_result = gr.HTML("")
+
+                    gr.Markdown("---")
+                    gr.Markdown("### 뷰어별 노드 목록")
+                    viewer_radio = gr.Radio(
+                        choices=[],
+                        label="Viewer 선택",
+                        interactive=True,
+                    )
+                    nodes_out = gr.HTML("<p style='opacity:0.5'>Import 후 표시됩니다</p>")
+
+                    gr.Markdown("---")
+                    gr.Markdown("### 수동 추가")
+                    with gr.Row():
+                        inp_viewer = gr.Textbox(label="Viewer Name",    placeholder="danuai56")
+                        inp_node   = gr.Textbox(label="Node ID",         placeholder="NODE001")
+                        inp_mgmt   = gr.Textbox(label="Management Code")
+                        inp_name   = gr.Textbox(label="Name")
+                    btn_add    = gr.Button("➕ 추가", variant="secondary")
+                    add_result = gr.HTML("")
+
     # ── 이벤트 연결 ───────────────────────────────────────────────────────────
 
     _today_outs   = [today_out, histogram_out]
@@ -744,30 +801,40 @@ with gr.Blocks(title="Danusys Event Analytics", theme=gr.themes.Soft()) as app:
     btn_refresh_today.click(load_today_tab,   outputs=_today_outs)
     btn_refresh_summary.click(load_summary_tab, outputs=_summary_outs)
 
+    # 설정 탭 이벤트
+    excel_file.change(
+        lambda f: "<p style='color:green;margin:0'>✓ 파일 선택됨</p>" if f else "",
+        inputs=[excel_file],
+        outputs=[file_status],
+    )
     btn_import.click(
         do_import_excel,
         inputs=[excel_file],
-        outputs=[import_result, nodes_out],
+        outputs=[import_result, viewer_radio, nodes_out],
     )
-    btn_refresh_nodes.click(load_server_nodes, outputs=[nodes_out])
+    viewer_radio.change(
+        do_load_nodes_by_viewer,
+        inputs=[viewer_radio],
+        outputs=[nodes_out],
+    )
     btn_add.click(
         do_add_node,
         inputs=[inp_viewer, inp_node, inp_mgmt, inp_name],
         outputs=[add_result, nodes_out],
     )
+
     btn_load_srv.click(do_load_server_stats, outputs=[srv_stats_out, srv_line_out, srv_hist_out])
 
     btn_all.click(  lambda: ALL_EVENTS, outputs=events_check)
     btn_clear.click(lambda: [],         outputs=events_check)
     btn_search.click(
         do_search,
-        inputs=[start_input, end_input, events_check],
+        inputs=[start_input, end_input, events_check, node_id_input],
         outputs=[stats_out, list_out, node_stats_out],
     )
 
     app.load(load_today_tab,   outputs=_today_outs)
     app.load(load_summary_tab, outputs=_summary_outs)
-    app.load(load_server_nodes, outputs=[nodes_out])
 
 
 if __name__ == "__main__":
