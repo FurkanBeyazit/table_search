@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routers import search, stats, server
+from routers import search, stats, server, analysis
 
 import database
 
@@ -16,6 +16,7 @@ app.add_middleware(
 app.include_router(search.router)
 app.include_router(stats.router)
 app.include_router(server.router)
+app.include_router(analysis.router)
 
 
 @app.on_event("startup")

@@ -417,6 +417,338 @@ def do_load_server_stats():
     return render_server_stats(data), build_server_line(data), build_server_histogram(data)
 
 
+# ── 분석 렌더러 ───────────────────────────────────────────────────────────────
+
+# ── 처리 현황 ─────────────────────────────────────────────────────────────────
+
+def render_processing_cards(summary: dict) -> str:
+    if not summary:
+        return ""
+    tot  = summary.get("total", 0)
+    proc = summary.get("processed", 0)
+    unpr = summary.get("unprocessed", 0)
+    rate = summary.get("rate", 0.0)
+
+    cs = "border-radius:10px;padding:18px 24px;text-align:center;flex:1;min-width:120px"
+    return (
+        "<div style='display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px'>"
+        f"<div style='{cs};background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.2)'>"
+        f"<div style='font-size:2rem;font-weight:700'>{tot:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>전체</div></div>"
+
+        f"<div style='{cs};background:rgba(84,162,75,0.08);border:1px solid rgba(84,162,75,0.35)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#54A24B'>{proc:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>확인 완료</div></div>"
+
+        f"<div style='{cs};background:rgba(228,87,86,0.08);border:1px solid rgba(228,87,86,0.35)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#E45756'>{unpr:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>미확인</div></div>"
+
+        f"<div style='{cs};background:rgba(76,120,168,0.08);border:1px solid rgba(76,120,168,0.35)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#4C78A8'>{rate}%</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>처리율</div></div>"
+        "</div>"
+    )
+
+
+def build_processing_bar(events: list):
+    fig, ax = plt.subplots(figsize=(14, 5))
+    active = [e for e in events if e["total"] > 0]
+    if not active:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    labels = [e["event"]       for e in active]
+    proc_v = [e["processed"]   for e in active]
+    unpr_v = [e["unprocessed"] for e in active]
+    x, w   = range(len(labels)), 0.35
+
+    b1 = ax.bar([i - w/2 for i in x], proc_v, w, label="확인 완료", color="#54A24B", alpha=0.85)
+    b2 = ax.bar([i + w/2 for i in x], unpr_v, w, label="미확인",    color="#E45756", alpha=0.85)
+
+    for bar in b1 + b2:
+        h = bar.get_height()
+        if h > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, h + 0.5, str(int(h)),
+                    ha="center", va="bottom", fontsize=10)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, fontsize=13)
+    ax.tick_params(axis="y", labelsize=12)
+    ax.legend(fontsize=13)
+    ax.set_title("이벤트별 처리 현황", fontsize=14, pad=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def render_processing_event_table(events: list) -> str:
+    active = [e for e in events if e["total"] > 0]
+    if not active:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += (
+        f"<tr><th {TH}>이벤트</th>"
+        f"<th {TH_C}>확인 완료</th><th {TH_C}>미확인</th>"
+        f"<th {TH_C}>합계</th><th {TH_C}>미확인율 %</th></tr>"
+    )
+    for e in active:
+        rate = e["unpr_rate"]
+        rc   = "#E45756" if rate > 30 else "#F58518" if rate > 10 else "inherit"
+        html += (
+            f"<tr><td {TD}><b>{e['event']}</b></td>"
+            f"<td {TD_C} style='color:#54A24B'>{e['processed']:,}</td>"
+            f"<td {TD_C} style='color:#E45756'>{e['unprocessed']:,}</td>"
+            f"<td {TD_C}>{e['total']:,}</td>"
+            f"<td {TD_C}><b style='color:{rc}'>{rate}%</b></td></tr>"
+        )
+    html += "</table></div>"
+    return html
+
+
+def render_processing_node_table(nodes: list) -> str:
+    if not nodes:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto;max-height:400px;overflow-y:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += (
+        f"<tr><th {TH}>Node ID</th><th {TH}>Name</th><th {TH_C}>Ch</th>"
+        f"<th {TH_C}>확인 완료</th><th {TH_C}>미확인</th>"
+        f"<th {TH_C}>합계</th><th {TH_C}>미확인율 %</th></tr>"
+    )
+    for n in nodes:
+        rate = n["unpr_rate"]
+        rc   = "#E45756" if rate > 30 else "#F58518" if rate > 10 else "inherit"
+        html += (
+            f"<tr><td {TD}>{n['node_id']}</td>"
+            f"<td {TD}>{n.get('node_name', '')}</td>"
+            f"<td {TD_C}>{n['ch']}</td>"
+            f"<td {TD_C} style='color:#54A24B'>{n['processed']:,}</td>"
+            f"<td {TD_C} style='color:#E45756'>{n['unprocessed']:,}</td>"
+            f"<td {TD_C}>{n['total']:,}</td>"
+            f"<td {TD_C}><b style='color:{rc}'>{rate}%</b></td></tr>"
+        )
+    html += "</table></div>"
+    return html
+
+
+def build_processing_trend(daily: list):
+    fig, ax = plt.subplots(figsize=(20, 4))
+    active = [d for d in daily if d["total"] > 0]
+    if not active:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    labels = [f"{d['date'][5:]}({d['label']})" for d in daily]
+    proc_v = [d["processed"]   for d in daily]
+    unpr_v = [d["unprocessed"] for d in daily]
+
+    ax.bar(labels, proc_v, label="확인 완료", color="#54A24B", alpha=0.85, width=0.6)
+    ax.bar(labels, unpr_v, bottom=proc_v, label="미확인", color="#E45756", alpha=0.85, width=0.6)
+
+    ax.tick_params(axis="x", rotation=45, labelsize=11)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.legend(fontsize=12)
+    ax.set_title("일별 처리 현황", fontsize=14, pad=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def do_load_processing(period: str):
+    data      = api_get("/api/analysis/processing", {"period": period})
+    empty_fig = plt.figure(figsize=(14, 5))
+    if "error" in data:
+        err = f"<p style='color:red'>⚠ {data['error']}</p>"
+        return err, empty_fig, err, err, empty_fig
+    return (
+        render_processing_cards(data.get("summary", {})),
+        build_processing_bar(data.get("events", [])),
+        render_processing_event_table(data.get("events", [])),
+        render_processing_node_table(data.get("nodes", [])),
+        build_processing_trend(data.get("daily", [])),
+    )
+
+
+# ── 정탐 / 오탐 ───────────────────────────────────────────────────────────────
+
+def render_precision_cards(summary: dict) -> str:
+    if not summary:
+        return ""
+    total = summary.get("total", 0)
+    jd    = summary.get("jeongdam", 0)
+    od    = summary.get("odam", 0)
+    prec  = summary.get("precision", 0.0)
+
+    cs = "border-radius:10px;padding:18px 24px;text-align:center;flex:1;min-width:120px"
+    return (
+        "<div style='display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px'>"
+        f"<div style='{cs};background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.2)'>"
+        f"<div style='font-size:2rem;font-weight:700'>{total:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>검토 완료</div></div>"
+
+        f"<div style='{cs};background:rgba(76,120,168,0.08);border:1px solid rgba(76,120,168,0.35)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#4C78A8'>{jd:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>정탐</div></div>"
+
+        f"<div style='{cs};background:rgba(228,87,86,0.08);border:1px solid rgba(228,87,86,0.35)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#E45756'>{od:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>오탐</div></div>"
+
+        f"<div style='{cs};background:rgba(84,162,75,0.08);border:1px solid rgba(84,162,75,0.35)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#54A24B'>{prec}%</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>Precision</div></div>"
+        "</div>"
+    )
+
+
+def build_precision_bar(events: list):
+    """Event bazlı 정탐 vs 오탐 grouped bar chart."""
+    fig, ax = plt.subplots(figsize=(14, 5))
+    active = [e for e in events if e["total"] > 0]
+    if not active:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    labels  = [e["event"]    for e in active]
+    jd_vals = [e["jeongdam"] for e in active]
+    od_vals = [e["odam"]     for e in active]
+    x, w    = range(len(labels)), 0.35
+
+    b1 = ax.bar([i - w/2 for i in x], jd_vals, w, label="정탐", color="#4C78A8", alpha=0.85)
+    b2 = ax.bar([i + w/2 for i in x], od_vals, w, label="오탐", color="#E45756", alpha=0.85)
+
+    for bar in b1 + b2:
+        h = bar.get_height()
+        if h > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, h + 0.5, str(int(h)),
+                    ha="center", va="bottom", fontsize=10)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, fontsize=13)
+    ax.tick_params(axis="y", labelsize=12)
+    ax.legend(fontsize=13)
+    ax.set_title("이벤트별 정탐 / 오탐", fontsize=14, pad=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def render_precision_event_table(events: list) -> str:
+    active = [e for e in events if e["total"] > 0]
+    if not active:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += (
+        f"<tr><th {TH}>이벤트</th>"
+        f"<th {TH_C}>정탐</th><th {TH_C}>오탐</th>"
+        f"<th {TH_C}>합계</th><th {TH_C}>오탐율 %</th></tr>"
+    )
+    for e in active:
+        rate = e["odam_rate"]
+        rc   = "#E45756" if rate > 30 else "#F58518" if rate > 15 else "inherit"
+        html += (
+            f"<tr><td {TD}><b>{e['event']}</b></td>"
+            f"<td {TD_C} style='color:#4C78A8'>{e['jeongdam']:,}</td>"
+            f"<td {TD_C} style='color:#E45756'>{e['odam']:,}</td>"
+            f"<td {TD_C}>{e['total']:,}</td>"
+            f"<td {TD_C}><b style='color:{rc}'>{rate}%</b></td></tr>"
+        )
+    html += "</table></div>"
+    return html
+
+
+def render_precision_node_table(nodes: list) -> str:
+    if not nodes:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto;max-height:400px;overflow-y:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += (
+        f"<tr><th {TH}>Node ID</th><th {TH}>Name</th><th {TH_C}>Ch</th>"
+        f"<th {TH_C}>정탐</th><th {TH_C}>오탐</th>"
+        f"<th {TH_C}>합계</th><th {TH_C}>오탐율 %</th></tr>"
+    )
+    for n in nodes:
+        rate = n["odam_rate"]
+        rc   = "#E45756" if rate > 30 else "#F58518" if rate > 15 else "inherit"
+        html += (
+            f"<tr><td {TD}>{n['node_id']}</td>"
+            f"<td {TD}>{n.get('node_name', '')}</td>"
+            f"<td {TD_C}>{n['ch']}</td>"
+            f"<td {TD_C} style='color:#4C78A8'>{n['jeongdam']:,}</td>"
+            f"<td {TD_C} style='color:#E45756'>{n['odam']:,}</td>"
+            f"<td {TD_C}>{n['total']:,}</td>"
+            f"<td {TD_C}><b style='color:{rc}'>{rate}%</b></td></tr>"
+        )
+    html += "</table></div>"
+    return html
+
+
+def build_precision_trend(daily: list):
+    """Günlük 오탐율 line chart + ortalama çizgisi."""
+    fig, ax = plt.subplots(figsize=(20, 4))
+    active = [d for d in daily if d["total"] > 0]
+    if not active:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    labels    = [f"{d['date'][5:]}({d['label']})" for d in daily]
+    rates     = [d["odam_rate"] for d in daily]
+    xs        = range(len(labels))
+    total_od  = sum(d["odam"]  for d in daily)
+    total_all = sum(d["total"] for d in daily)
+    avg       = round(total_od / total_all * 100, 1) if total_all > 0 else 0
+
+    ax.plot(xs, rates, marker="o", linewidth=2.5, markersize=6,
+            color="#E45756", label="오탐율 %")
+    ax.fill_between(xs, rates, alpha=0.10, color="#E45756")
+    ax.axhline(y=avg, color="#F58518", linewidth=1.5, linestyle="--",
+               label=f"평균 {avg:.1f}%")
+
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels(labels, rotation=45, fontsize=11)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.set_ylabel("오탐율 %", fontsize=12)
+    ax.set_title("일별 오탐율 추이", fontsize=14, pad=12)
+    ax.legend(fontsize=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def do_load_precision(period: str):
+    data      = api_get("/api/analysis/precision", {"period": period})
+    empty_fig = plt.figure(figsize=(14, 5))
+    if "error" in data:
+        err = f"<p style='color:red'>⚠ {data['error']}</p>"
+        return err, empty_fig, err, err, empty_fig
+    return (
+        render_precision_cards(data.get("summary", {})),
+        build_precision_bar(data.get("events", [])),
+        render_precision_event_table(data.get("events", [])),
+        render_precision_node_table(data.get("nodes", [])),
+        build_precision_trend(data.get("daily", [])),
+    )
+
+
 # ── 조희 렌더러 ───────────────────────────────────────────────────────────────
 
 def render_stats(data: dict) -> str:
@@ -660,6 +992,21 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                     <span style="font-size:0.8rem;opacity:0.6">Search</span>
                   </div>
 
+                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('분석')){tabs[i].click();return;}} })()"
+                       style="width:180px;height:180px;border-radius:14px;
+                              border:2px solid rgba(0,188,212,0.6);
+                              background:rgba(0,188,212,0.08);
+                              display:flex;flex-direction:column;
+                              align-items:center;justify-content:center;
+                              gap:10px;cursor:pointer;user-select:none;
+                              transition:background 0.2s"
+                       onmouseover="this.style.background='rgba(0,188,212,0.18)'"
+                       onmouseout="this.style.background='rgba(0,188,212,0.08)'">
+                    <span style="font-size:2.4rem">📉</span>
+                    <span style="font-size:1.1rem;font-weight:600">분석</span>
+                    <span style="font-size:0.8rem;opacity:0.6">Analytics</span>
+                  </div>
+
                   <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('설정')){tabs[i].click();return;}} })()"
                        style="width:180px;height:180px;border-radius:14px;
                               border:2px solid rgba(255,165,0,0.6);
@@ -754,8 +1101,68 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                 with gr.Tab("🖥 Node Stats / 노드 통계"):
                     node_stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
 
-        # ── Tab 5: 설정 ──────────────────────────────────────────────────────
-        with gr.Tab("⚙️ 설정", id=5):
+        # ── Tab 5: 분석 ──────────────────────────────────────────────────────
+        with gr.Tab("📉 분석", id=5):
+            gr.Markdown("## 분석 / Analytics")
+
+            with gr.Tabs():
+
+                # ── 처리 현황 ─────────────────────────────────────────────
+                with gr.Tab("🔲 처리 현황"):
+                    with gr.Row():
+                        processing_period = gr.Radio(
+                            choices=["오늘", "7일", "14일", "21일", "전체"],
+                            value="전체",
+                            label="기간",
+                            interactive=True,
+                        )
+                        btn_processing = gr.Button("🔄 조회", variant="primary", scale=1)
+
+                    processing_cards_out = gr.HTML("")
+
+                    gr.Markdown("#### 이벤트별 처리 현황")
+                    processing_bar_out = gr.Plot(container=False)
+
+                    with gr.Row():
+                        with gr.Column():
+                            gr.Markdown("##### 이벤트별 상세")
+                            processing_event_out = gr.HTML("")
+                        with gr.Column():
+                            gr.Markdown("##### 카메라별 미확인 순위")
+                            processing_node_out = gr.HTML("")
+
+                    gr.Markdown("#### 일별 처리 현황")
+                    processing_trend_out = gr.Plot(container=False)
+
+                # ── 정탐 / 오탐 ──────────────────────────────────────────
+                with gr.Tab("✅ 정탐 / 오탐"):
+                    with gr.Row():
+                        precision_period = gr.Radio(
+                            choices=["오늘", "7일", "14일", "30일", "전체"],
+                            value="전체",
+                            label="기간",
+                            interactive=True,
+                        )
+                        btn_precision = gr.Button("🔄 조회", variant="primary", scale=1)
+
+                    precision_cards_out = gr.HTML("")
+
+                    gr.Markdown("#### 이벤트별 정탐 / 오탐")
+                    precision_bar_out = gr.Plot(container=False)
+
+                    with gr.Row():
+                        with gr.Column():
+                            gr.Markdown("##### 이벤트별 상세")
+                            precision_event_out = gr.HTML("")
+                        with gr.Column():
+                            gr.Markdown("##### 카메라별 오탐 순위")
+                            precision_node_out = gr.HTML("")
+
+                    gr.Markdown("#### 일별 오탐율 추이")
+                    precision_trend_out = gr.Plot(container=False)
+
+        # ── Tab 6: 설정 ──────────────────────────────────────────────────────
+        with gr.Tab("⚙️ 설정", id=6):
             gr.Markdown("## 설정 / Settings")
 
             with gr.Tabs():
@@ -824,6 +1231,20 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     )
 
     btn_load_srv.click(do_load_server_stats, outputs=[srv_stats_out, srv_line_out, srv_hist_out])
+
+    _processing_outs = [
+        processing_cards_out, processing_bar_out,
+        processing_event_out, processing_node_out, processing_trend_out,
+    ]
+    btn_processing.click(do_load_processing, inputs=[processing_period], outputs=_processing_outs)
+    processing_period.change(do_load_processing, inputs=[processing_period], outputs=_processing_outs)
+
+    _precision_outs = [
+        precision_cards_out, precision_bar_out,
+        precision_event_out, precision_node_out, precision_trend_out,
+    ]
+    btn_precision.click(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
+    precision_period.change(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
 
     btn_all.click(  lambda: ALL_EVENTS, outputs=events_check)
     btn_clear.click(lambda: [],         outputs=events_check)
