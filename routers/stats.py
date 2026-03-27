@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from datetime import date, datetime, timedelta
 
 import database
@@ -17,14 +17,15 @@ def get_today():
     def query_table(table):
         return database.run_query(
             f"SELECT {EVENT_COL} AS et, "
-            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date)                      AS today, "
-            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '7 days')  AS d7, "
-            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '14 days') AS d14, "
-            f"  COUNT(*) FILTER (WHERE reg_dt >= %s::date - INTERVAL '21 days') AS d21 "
+            f"  COUNT(*) FILTER (WHERE DATE(reg_dt) = %s::date)                      AS today, "
+            f"  COUNT(*) FILTER (WHERE DATE(reg_dt) = %s::date - INTERVAL '7 days')  AS d7, "
+            f"  COUNT(*) FILTER (WHERE DATE(reg_dt) = %s::date - INTERVAL '14 days') AS d14, "
+            f"  COUNT(*) FILTER (WHERE DATE(reg_dt) = %s::date - INTERVAL '21 days') AS d21 "
             f"FROM {table} "
-            f"WHERE reg_dt >= %s::date - INTERVAL '21 days' "
+            f"WHERE DATE(reg_dt) IN (%s::date, %s::date - INTERVAL '7 days', "
+            f"                       %s::date - INTERVAL '14 days', %s::date - INTERVAL '21 days') "
             f"GROUP BY {EVENT_COL}",
-            [today, today, today, today, today],
+            [today, today, today, today, today, today, today, today],
         )
 
     agg = {}
@@ -160,3 +161,67 @@ def get_histogram():
         days.append({"date": ds, "label": KR_DAYS[d.weekday()], "events": day_map.get(ds, {})})
 
     return {"days": days}
+
+
+# ── /api/stats/period_query ────────────────────────────────────────────────────
+
+@router.get("/period_query")
+def get_period_query(
+    ref_date:  str = Query(default=None),
+    time_from: str = Query(default="00:00"),
+    time_to:   str = Query(default="23:59"),
+    event:     str = Query(default="전체"),
+):
+    """기간별 조회: 특정 시간대의 일별 이벤트 건수 (30일 list, 14일 chart용)."""
+    today = date.today()
+    try:
+        ref = date.fromisoformat(ref_date) if ref_date else today
+    except ValueError:
+        ref = today
+    start30 = ref - timedelta(days=29)
+
+    time_cond = "AND reg_dt::time BETWEEN %s::time AND %s::time"
+
+    def query_table(table, ev_cond, ev_params):
+        return database.run_query(
+            f"SELECT DATE(reg_dt) AS day, COUNT(*) AS cnt "
+            f"FROM {table} "
+            f"WHERE DATE(reg_dt) BETWEEN %s AND %s "
+            f"{time_cond} {ev_cond} "
+            f"GROUP BY DATE(reg_dt) ORDER BY day",
+            [start30, ref, time_from, time_to] + ev_params,
+        )
+
+    if event == "전체":
+        rows  = query_table(BHVR_TABLE, "", [])
+        rows += query_table(DST_TABLE,  "", [])
+    elif event in BHVR_EVENTS:
+        rows = query_table(BHVR_TABLE, f"AND {EVENT_COL} = %s", [event])
+    elif event in DST_EVENTS:
+        rows = query_table(DST_TABLE,  f"AND {EVENT_COL} = %s", [event])
+    else:
+        rows  = query_table(BHVR_TABLE, "", [])
+        rows += query_table(DST_TABLE,  "", [])
+
+    day_map = {}
+    for r in rows:
+        ds = str(r["day"])
+        day_map[ds] = day_map.get(ds, 0) + int(r["cnt"] or 0)
+
+    days = []
+    for i in range(30):
+        d  = start30 + timedelta(days=i)
+        ds = str(d)
+        days.append({
+            "date":  ds,
+            "label": KR_DAYS[d.weekday()],
+            "count": day_map.get(ds, 0),
+        })
+
+    return {
+        "ref_date":  str(ref),
+        "time_from": time_from,
+        "time_to":   time_to,
+        "event":     event,
+        "days":      days,
+    }

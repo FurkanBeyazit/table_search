@@ -914,6 +914,101 @@ def do_search(start_dt: str, end_dt: str, selected_events: list, node_id_input: 
     return stats_html, list_html, node_html
 
 
+# ── 기간별 조회 렌더러 ────────────────────────────────────────────────────────
+
+def build_period_chart(data: dict):
+    days = data.get("days", [])[-14:]  # last 14 days for chart
+    fig, ax = plt.subplots(figsize=(14, 5))
+    if not days:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    ref_date  = data.get("ref_date", "")
+    time_from = data.get("time_from", "")
+    time_to   = data.get("time_to", "")
+    event_lbl = data.get("event", "전체")
+
+    labels = [f"{d['date'][5:]} ({d['label']})" for d in days]
+    counts = [d["count"] for d in days]
+    colors = ["#E45756" if d["date"] == ref_date else "#4C78A8" for d in days]
+
+    bars = ax.bar(range(len(labels)), counts, color=colors, alpha=0.85)
+    for bar in bars:
+        h = bar.get_height()
+        if h > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, h + max(counts) * 0.01,
+                    str(int(h)), ha="center", va="bottom", fontsize=10)
+
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+    ax.set_title(
+        f"이벤트 건수  [{time_from} ~ {time_to}]  ·  {event_lbl}  (최근 14일, 빨간색=기준일)",
+        fontsize=13,
+    )
+    ax.set_ylabel("건수")
+    fig.tight_layout()
+    return fig
+
+
+def render_period_list(data: dict) -> str:
+    if "error" in data:
+        return f"<p style='color:red'>⚠ {data['error']}</p>"
+    days = data.get("days", [])
+    if not days:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    ref_date  = data.get("ref_date", "")
+    time_from = data.get("time_from", "")
+    time_to   = data.get("time_to", "")
+    event_lbl = data.get("event", "전체")
+
+    html  = (f"<p style='opacity:0.6;margin:0 0 8px'>"
+             f"📅 기준일: <b>{ref_date}</b> &nbsp;·&nbsp; "
+             f"시간: <b>{time_from} ~ {time_to}</b> &nbsp;·&nbsp; "
+             f"이벤트: <b>{event_lbl}</b></p>")
+    html += "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += (
+        f"<tr><th {TH}>날짜</th><th {TH_C}>요일</th><th {TH_C}>건수</th></tr>"
+    )
+
+    max_cnt = max((d["count"] for d in days), default=1) or 1
+    for d in reversed(days):  # newest first
+        cnt  = d["count"]
+        bg   = "background:rgba(228,87,86,0.12);" if d["date"] == ref_date else ""
+        bw   = int(cnt / max_cnt * 80)
+        bar  = (f"<div style='display:inline-flex;align-items:center;gap:6px'>"
+                f"<b>{cnt}</b>"
+                f"<div style='width:{bw}px;height:10px;background:#4C78A8;"
+                f"border-radius:2px;opacity:0.7'></div></div>")
+        html += (
+            f"<tr style='{bg}'>"
+            f"<td {TD}>{d['date']}</td>"
+            f"<td {TD_C}>{d['label']}</td>"
+            f"<td {TD_C}>{bar}</td>"
+            f"</tr>"
+        )
+    html += "</table></div>"
+    return html
+
+
+def do_period_query(ref_date: str, time_from: str, time_to: str, event: str):
+    params = {
+        "ref_date":  (ref_date or "").strip(),
+        "time_from": (time_from or "00:00").strip(),
+        "time_to":   (time_to   or "23:59").strip(),
+        "event":     event or "전체",
+    }
+    data      = api_get("/api/stats/period_query", params)
+    empty_fig = plt.figure(figsize=(14, 5))
+    if "error" in data:
+        err = f"<p style='color:red'>⚠ {data['error']}</p>"
+        return empty_fig, err
+    return build_period_chart(data), render_period_list(data)
+
+
 # ── Gradio 레이아웃 ───────────────────────────────────────────────────────────
 
 _now           = datetime.now()
@@ -1138,7 +1233,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                 with gr.Tab("✅ 정탐 / 오탐"):
                     with gr.Row():
                         precision_period = gr.Radio(
-                            choices=["오늘", "7일", "14일", "30일", "전체"],
+                            choices=["오늘", "7일", "14일", "21일", "전체"],
                             value="전체",
                             label="기간",
                             interactive=True,
@@ -1199,6 +1294,43 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                     btn_add    = gr.Button("➕ 추가", variant="secondary")
                     add_result = gr.HTML("")
 
+        # ── Tab 7: 기간별 조회 ────────────────────────────────────────────────
+        with gr.Tab("📆 기간별 조회", id=7):
+            gr.Markdown("## 기간별 조회 / Period Query")
+            gr.Markdown(
+                "특정 시간대의 이벤트 건수를 최근 14일 그래프와 30일 목록으로 조회합니다.\n\n"
+                "> 예: 08:00~08:10 시간대를 기준으로 최근 14일 동안 매일 몇 건 발생했는지 한눈에 비교"
+            )
+            with gr.Row():
+                pq_ref_date  = gr.Textbox(
+                    label="기준 날짜",
+                    value=datetime.now().strftime("%Y-%m-%d"),
+                    placeholder="YYYY-MM-DD",
+                    scale=2,
+                )
+                pq_time_from = gr.Textbox(
+                    label="시작 시간",
+                    value="00:00",
+                    placeholder="HH:MM",
+                    scale=1,
+                )
+                pq_time_to = gr.Textbox(
+                    label="종료 시간",
+                    value="23:59",
+                    placeholder="HH:MM",
+                    scale=1,
+                )
+                pq_event = gr.Dropdown(
+                    choices=["전체"] + ALL_EVENTS,
+                    value="전체",
+                    label="이벤트 필터",
+                    scale=2,
+                )
+                btn_pq = gr.Button("🔍 조회", variant="primary", scale=1, min_width=100)
+
+            pq_chart_out = gr.Plot(container=False, label="14일 그래프")
+            pq_list_out  = gr.HTML("<p style='opacity:0.5'>위 조건을 설정하고 조회 버튼을 누르세요</p>")
+
     # ── 이벤트 연결 ───────────────────────────────────────────────────────────
 
     _today_outs   = [today_out, histogram_out]
@@ -1245,6 +1377,12 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     ]
     btn_precision.click(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
     precision_period.change(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
+
+    btn_pq.click(
+        do_period_query,
+        inputs=[pq_ref_date, pq_time_from, pq_time_to, pq_event],
+        outputs=[pq_chart_out, pq_list_out],
+    )
 
     btn_all.click(  lambda: ALL_EVENTS, outputs=events_check)
     btn_clear.click(lambda: [],         outputs=events_check)

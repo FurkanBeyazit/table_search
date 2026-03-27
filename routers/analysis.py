@@ -11,11 +11,11 @@ router = APIRouter(prefix="/api/analysis", tags=["analysis"])
 
 KR_DAYS = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
 
-PERIOD_DAYS = {"오늘": 0, "7일": 6, "14일": 13, "21일": 20}  # "전체" = None (no filter)
+PERIOD_DAYS = {"오늘": 0, "7일": 7, "14일": 14, "21일": 21}  # "전체" = None (no filter)
 
 
 def _start(period: str):
-    """기간 문자열 → 시작 date. '전체'면 None 반환 (필터 없음)."""
+    """기간 문자열 → 해당 날짜(단일). '전체'면 None 반환 (필터 없음)."""
     if period == "전체" or period not in PERIOD_DAYS:
         return None
     return date.today() - timedelta(days=PERIOD_DAYS[period])
@@ -29,7 +29,7 @@ def get_processing(period: str = Query(default="전체")):
     start = _start(period)
     today = date.today()
 
-    dt_where  = "AND reg_dt >= %s::date" if start else ""
+    dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
     dt_params = [start] if start else []
 
     # 1. Summary ────────────────────────────────────────────────────────────
@@ -181,13 +181,13 @@ def get_processing(period: str = Query(default="전체")):
 # ── /api/analysis/precision ───────────────────────────────────────────────────
 
 @router.get("/precision")
-def get_precision(period: str = Query(default="14일")):
+def get_precision(period: str = Query(default="전체")):
     """정탐 / 오탐 분析: summary + event bazlı + node bazlı + günlük trend."""
     start = _start(period)
     today = date.today()
 
     # date filter helpers
-    dt_where  = "AND reg_dt >= %s::date" if start else ""
+    dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
     dt_params = [start] if start else []
 
     # 1. Summary ────────────────────────────────────────────────────────────
