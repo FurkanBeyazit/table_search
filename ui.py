@@ -539,6 +539,41 @@ def render_processing_node_table(nodes: list) -> str:
 
 
 def build_processing_trend(daily: list):
+    """미확인율 % line chart + 평균 점선."""
+    fig, ax = plt.subplots(figsize=(20, 4))
+    active = [d for d in daily if d["total"] > 0]
+    if not active:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    labels    = [f"{d['date'][5:]}({d['label']})" for d in daily]
+    rates     = [d["unpr_rate"] for d in daily]
+    xs        = range(len(labels))
+    total_unp = sum(d["unprocessed"] for d in daily)
+    total_all = sum(d["total"]       for d in daily)
+    avg       = round(total_unp / total_all * 100, 1) if total_all > 0 else 0
+
+    ax.plot(xs, rates, marker="o", linewidth=2.5, markersize=6,
+            color="#E45756", label="미확인율 %")
+    ax.fill_between(xs, rates, alpha=0.10, color="#E45756")
+    ax.axhline(y=avg, color="#F58518", linewidth=1.5, linestyle="--",
+               label=f"평균 {avg:.1f}%")
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels(labels, rotation=45, fontsize=11)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.set_ylabel("미확인율 %", fontsize=12)
+    ax.set_title("일별 미확인율 추이", fontsize=14, pad=12)
+    ax.legend(fontsize=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def build_processing_count_trend(daily: list):
+    """확인 완료 vs 미확인 건수 두 선."""
     fig, ax = plt.subplots(figsize=(20, 4))
     active = [d for d in daily if d["total"] > 0]
     if not active:
@@ -550,14 +585,20 @@ def build_processing_trend(daily: list):
     labels = [f"{d['date'][5:]}({d['label']})" for d in daily]
     proc_v = [d["processed"]   for d in daily]
     unpr_v = [d["unprocessed"] for d in daily]
+    xs     = range(len(labels))
 
-    ax.bar(labels, proc_v, label="확인 완료", color="#54A24B", alpha=0.85, width=0.6)
-    ax.bar(labels, unpr_v, bottom=proc_v, label="미확인", color="#E45756", alpha=0.85, width=0.6)
-
-    ax.tick_params(axis="x", rotation=45, labelsize=11)
+    ax.plot(xs, proc_v, marker="o", linewidth=2.5, markersize=6,
+            color="#54A24B", label="확인 완료")
+    ax.plot(xs, unpr_v, marker="o", linewidth=2.5, markersize=6,
+            color="#E45756", label="미확인")
+    ax.fill_between(xs, proc_v, alpha=0.08, color="#54A24B")
+    ax.fill_between(xs, unpr_v, alpha=0.08, color="#E45756")
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels(labels, rotation=45, fontsize=11)
     ax.tick_params(axis="y", labelsize=11)
+    ax.set_ylabel("건수", fontsize=12)
+    ax.set_title("일별 확인 완료 / 미확인 건수", fontsize=14, pad=12)
     ax.legend(fontsize=12)
-    ax.set_title("일별 처리 현황", fontsize=14, pad=12)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     fig.tight_layout()
@@ -565,18 +606,26 @@ def build_processing_trend(daily: list):
 
 
 def do_load_processing(period: str):
-    data      = api_get("/api/analysis/processing", {"period": period})
-    empty_fig = plt.figure(figsize=(14, 5))
-    if "error" in data:
-        err = f"<p style='color:red'>⚠ {data['error']}</p>"
-        return err, empty_fig, err, err, empty_fig
-    return (
-        render_processing_cards(data.get("summary", {})),
-        build_processing_bar(data.get("events", [])),
-        render_processing_event_table(data.get("events", [])),
-        render_processing_node_table(data.get("nodes", [])),
-        build_processing_trend(data.get("daily", [])),
-    )
+    try:
+        data      = api_get("/api/analysis/processing", {"period": period})
+        empty_fig = plt.figure(figsize=(20, 4))
+        if "error" in data:
+            err = f"<p style='color:red'>⚠ {data['error']}</p>"
+            return err, empty_fig, err, err, empty_fig, empty_fig
+        daily = data.get("daily", [])
+        return (
+            render_processing_cards(data.get("summary", {})),
+            build_processing_bar(data.get("events", [])),
+            render_processing_event_table(data.get("events", [])),
+            render_processing_node_table(data.get("nodes", [])),
+            build_processing_trend(daily),
+            build_processing_count_trend(daily),
+        )
+    except Exception as e:
+        import traceback
+        err = f"<p style='color:red'>⚠ Python hatası: <pre>{traceback.format_exc()}</pre></p>"
+        empty_fig = plt.figure(figsize=(20, 4))
+        return err, empty_fig, err, err, empty_fig, empty_fig
 
 
 # ── 정탐 / 오탐 ───────────────────────────────────────────────────────────────
@@ -734,18 +783,53 @@ def build_precision_trend(daily: list):
     return fig
 
 
+def build_precision_count_trend(daily: list):
+    """정탐 vs 오탐 건수 두 선."""
+    fig, ax = plt.subplots(figsize=(20, 4))
+    active = [d for d in daily if d["total"] > 0]
+    if not active:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    labels = [f"{d['date'][5:]}({d['label']})" for d in daily]
+    jd_v   = [d["jeongdam"] for d in daily]
+    od_v   = [d["odam"]     for d in daily]
+    xs     = range(len(labels))
+
+    ax.plot(xs, jd_v, marker="o", linewidth=2.5, markersize=6,
+            color="#4C78A8", label="정탐")
+    ax.plot(xs, od_v, marker="o", linewidth=2.5, markersize=6,
+            color="#E45756", label="오탐")
+    ax.fill_between(xs, jd_v, alpha=0.08, color="#4C78A8")
+    ax.fill_between(xs, od_v, alpha=0.08, color="#E45756")
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels(labels, rotation=45, fontsize=11)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.set_ylabel("건수", fontsize=12)
+    ax.set_title("일별 정탐 / 오탐 건수", fontsize=14, pad=12)
+    ax.legend(fontsize=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
 def do_load_precision(period: str):
     data      = api_get("/api/analysis/precision", {"period": period})
-    empty_fig = plt.figure(figsize=(14, 5))
+    empty_fig = plt.figure(figsize=(20, 4))
     if "error" in data:
         err = f"<p style='color:red'>⚠ {data['error']}</p>"
-        return err, empty_fig, err, err, empty_fig
+        return err, empty_fig, err, err, empty_fig, empty_fig
+    daily = data.get("daily", [])
     return (
         render_precision_cards(data.get("summary", {})),
         build_precision_bar(data.get("events", [])),
         render_precision_event_table(data.get("events", [])),
         render_precision_node_table(data.get("nodes", [])),
-        build_precision_trend(data.get("daily", [])),
+        build_precision_trend(daily),
+        build_precision_count_trend(daily),
     )
 
 
@@ -914,6 +998,315 @@ def do_search(start_dt: str, end_dt: str, selected_events: list, node_id_input: 
     return stats_html, list_html, node_html
 
 
+# ── 오탐 원인 렌더러 ──────────────────────────────────────────────────────────
+
+_CAUSE_COLORS = ["#4C78A8", "#E45756", "#F58518", "#54A24B", "#B279A2",
+                 "#9D755D", "#BAB0AC", "#72B7B2"]
+
+
+def _cause_label(c: str) -> str:
+    return c if c else "미입력"
+
+
+def render_false_cause_completion(comp: dict) -> str:
+    if not comp:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+    tot  = comp.get("total", 0)
+    fill = comp.get("filled", 0);    fp = comp.get("filled_pct", 0)
+    emp  = comp.get("empty",  0);    ep = comp.get("empty_pct",  0)
+    null = comp.get("null_cnt", 0);  np_ = comp.get("null_pct",  0)
+
+    def bar_html(pct, color):
+        w = int(pct * 1.2)  # max ~120px at 100%
+        return (f"<div style='display:inline-flex;align-items:center;gap:6px'>"
+                f"<div style='width:{w}px;height:10px;background:{color};"
+                f"border-radius:2px;opacity:0.75'></div>"
+                f"<span style='font-size:0.85rem'>{pct}%</span></div>")
+
+    html  = (f"<p style='opacity:0.6;margin:0 0 8px'>오탐 전체 <b>{tot:,}건</b> 중 "
+             f"fls_pst_knd 입력 현황</p>")
+    html += "<table style='border-collapse:collapse;font-size:13px'>"
+    html += (
+        f"<tr><th {TH}>구분</th><th {TH_C}>건수</th><th {TH}>비율</th></tr>"
+        f"<tr><td {TD}><b style='color:#54A24B'>원인 입력됨</b></td>"
+        f"<td {TD_C}>{fill:,}</td><td {TD}>{bar_html(fp,'#54A24B')}</td></tr>"
+        f"<tr><td {TD}><b style='color:#F58518'>미입력 (빈 값)</b></td>"
+        f"<td {TD_C}>{emp:,}</td><td {TD}>{bar_html(ep,'#F58518')}</td></tr>"
+        f"<tr><td {TD}><b style='color:#BAB0AC'>NULL</b></td>"
+        f"<td {TD_C}>{null:,}</td><td {TD}>{bar_html(np_,'#BAB0AC')}</td></tr>"
+    )
+    html += "</table>"
+    return html
+
+
+def build_false_cause_event_chart(events: list, all_causes: list):
+    """이벤트별 grouped bar, hue = fls_pst_knd."""
+    import numpy as np
+    fig, ax = plt.subplots(figsize=(max(10, len(events) * 1.8), 6))
+    if not events or not all_causes:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    n_ev  = len(events)
+    n_c   = len(all_causes)
+    x     = np.arange(n_ev)
+    w     = min(0.7 / n_c, 0.25)
+
+    ev_labels = [e["event"] for e in events]
+
+    for i, cause in enumerate(all_causes):
+        counts = [e["cause_counts"].get(cause, 0) for e in events]
+        offset = (i - n_c / 2 + 0.5) * w
+        color  = _CAUSE_COLORS[i % len(_CAUSE_COLORS)]
+        bars   = ax.bar(x + offset, counts, w, label=_cause_label(cause),
+                        color=color, alpha=0.85)
+        for bar in bars:
+            h = bar.get_height()
+            if h > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2, h + 0.3,
+                        str(int(h)), ha="center", va="bottom", fontsize=9)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(ev_labels, fontsize=12)
+    ax.set_ylabel("건수", fontsize=12)
+    ax.set_title("이벤트별 오탐 원인 분포", fontsize=14, pad=12)
+    ax.legend(fontsize=11, title="원인 (fls_pst_knd)", title_fontsize=10)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def render_false_cause_event_table(events: list, all_causes: list) -> str:
+    if not events:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    header = f"<tr><th {TH}>이벤트</th>"
+    for c in all_causes:
+        header += f"<th {TH_C}>{_cause_label(c)}</th>"
+    header += f"<th {TH_C}>합계</th></tr>"
+    html += header
+
+    for e in events:
+        cc = e["cause_counts"]
+        html += f"<tr><td {TD}><b>{e['event']}</b></td>"
+        for c in all_causes:
+            v = cc.get(c, 0)
+            html += f"<td {TD_C}>{v:,}</td>"
+        html += f"<td {TD_C}><b>{e['total']:,}</b></td></tr>"
+
+    html += "</table></div>"
+    return html
+
+
+def render_false_cause_user_table(users: list, all_causes: list) -> str:
+    if not users:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto;max-height:400px;overflow-y:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    header = f"<tr><th {TH}>사용자</th>"
+    for c in all_causes:
+        header += f"<th {TH_C}>{_cause_label(c)}</th>"
+    header += f"<th {TH_C}>합계</th></tr>"
+    html += header
+
+    for u in users:
+        cc = u["cause_counts"]
+        html += f"<tr><td {TD}><b>{u['reg_id']}</b></td>"
+        for c in all_causes:
+            v = cc.get(c, 0)
+            html += f"<td {TD_C}>{v:,}</td>"
+        html += f"<td {TD_C}><b>{u['total']:,}</b></td></tr>"
+
+    html += "</table></div>"
+    return html
+
+
+def do_load_false_cause(period: str):
+    try:
+        data      = api_get("/api/analysis/false_cause", {"period": period})
+        empty_fig = plt.figure(figsize=(10, 6))
+        if "error" in data:
+            err = f"<p style='color:red'>⚠ {data['error']}</p>"
+            return err, empty_fig, err, err
+        all_causes = data.get("all_causes", [])
+        return (
+            render_false_cause_completion(data.get("completion", {})),
+            build_false_cause_event_chart(data.get("events", []), all_causes),
+            render_false_cause_event_table(data.get("events", []), all_causes),
+            render_false_cause_user_table(data.get("users",  []), all_causes),
+        )
+    except Exception as e:
+        import traceback
+        err = f"<p style='color:red'>⚠ <pre>{traceback.format_exc()}</pre></p>"
+        return err, plt.figure(figsize=(10, 6)), err, err
+
+
+# ── 시간대 분석 렌더러 ────────────────────────────────────────────────────────
+
+def render_time_dist_cards(cards: dict) -> str:
+    if not cards:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+    bh  = cards.get("busiest_hr",   0)
+    bc  = cards.get("busiest_cnt",  0)
+    qh  = cards.get("quietest_hr",  0)
+    qc  = cards.get("quietest_cnt", 0)
+    nr  = cards.get("night_rate",   0)
+    dr  = cards.get("day_rate",     0)
+    tot = cards.get("total",        0)
+
+    cs = "border-radius:10px;padding:16px 20px;text-align:center;flex:1;min-width:120px"
+    return (
+        "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px'>"
+        f"<div style='{cs};background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.2)'>"
+        f"<div style='font-size:1.8rem;font-weight:700'>{tot:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>오탐 총계</div></div>"
+
+        f"<div style='{cs};background:rgba(228,87,86,0.08);border:1px solid rgba(228,87,86,0.4)'>"
+        f"<div style='font-size:1.8rem;font-weight:700;color:#E45756'>{bh:02d}시</div>"
+        f"<div style='font-size:0.85rem;font-weight:600;margin-top:2px'>가장 바쁜 시간</div>"
+        f"<div style='font-size:0.8rem;opacity:0.5'>{bc:,}건</div></div>"
+
+        f"<div style='{cs};background:rgba(84,162,75,0.08);border:1px solid rgba(84,162,75,0.4)'>"
+        f"<div style='font-size:1.8rem;font-weight:700;color:#54A24B'>{qh:02d}시</div>"
+        f"<div style='font-size:0.85rem;font-weight:600;margin-top:2px'>가장 조용한 시간</div>"
+        f"<div style='font-size:0.8rem;opacity:0.5'>{qc:,}건</div></div>"
+
+        f"<div style='{cs};background:rgba(76,120,168,0.08);border:1px solid rgba(76,120,168,0.4)'>"
+        f"<div style='font-size:1.8rem;font-weight:700;color:#4C78A8'>{nr}%</div>"
+        f"<div style='font-size:0.85rem;font-weight:600;margin-top:2px'>야간 비율</div>"
+        f"<div style='font-size:0.8rem;opacity:0.5'>00 ~ 06시</div></div>"
+
+        f"<div style='{cs};background:rgba(245,133,24,0.08);border:1px solid rgba(245,133,24,0.4)'>"
+        f"<div style='font-size:1.8rem;font-weight:700;color:#F58518'>{dr}%</div>"
+        f"<div style='font-size:0.85rem;font-weight:600;margin-top:2px'>주간 비율</div>"
+        f"<div style='font-size:0.8rem;opacity:0.5'>06 ~ 18시</div></div>"
+        "</div>"
+    )
+
+
+def build_time_heatmap(hourly_events: dict):
+    import numpy as np
+    active_evs = [ev for ev in ALL_EVENTS if any(hourly_events.get(ev, []))]
+    if not active_evs:
+        fig, ax = plt.subplots(figsize=(20, 4))
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    matrix = np.array([hourly_events.get(ev, [0]*24) for ev in active_evs], dtype=float)
+    h      = 5
+    fig, ax = plt.subplots(figsize=(20, h))
+    im = ax.imshow(matrix, aspect="auto", cmap="YlOrRd", interpolation="nearest")
+    plt.colorbar(im, ax=ax, shrink=0.8, label="오탐 건수")
+
+    ax.set_xticks(range(24))
+    ax.set_xticklabels([f"{h:02d}" for h in range(24)], fontsize=10)
+    ax.set_yticks(range(len(active_evs)))
+    ax.set_yticklabels(active_evs, fontsize=11)
+    ax.set_xlabel("시간 (hour)", fontsize=12)
+    ax.set_title("시간대 × 이벤트 오탐 히트맵", fontsize=14, pad=12)
+
+    # 값 표시
+    for i in range(len(active_evs)):
+        for j in range(24):
+            v = int(matrix[i][j])
+            if v > 0:
+                ax.text(j, i, str(v), ha="center", va="center",
+                        fontsize=8, color="black" if matrix[i][j] < matrix.max() * 0.6 else "white")
+    fig.tight_layout()
+    return fig
+
+
+def build_time_slot_bar(slots: list):
+    fig, ax = plt.subplots(figsize=(20, 5))
+    if not slots:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    labels = [s["label"] for s in slots]
+    counts = [s["count"] for s in slots]
+    colors = ["#4C78A8", "#54A24B", "#F58518", "#B279A2"]
+
+    bars = ax.bar(labels, counts, color=colors, alpha=0.85, width=0.55)
+    for bar in bars:
+        h = bar.get_height()
+        if h > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2, h + max(counts) * 0.01,
+                    f"{int(h):,}", ha="center", va="bottom", fontsize=12)
+
+    ax.set_title("시간대별 오탐 건수", fontsize=14, pad=12)
+    ax.set_ylabel("건수", fontsize=12)
+    ax.tick_params(axis="x", labelsize=12)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def build_time_line(hour_total: list):
+    fig, ax = plt.subplots(figsize=(20, 5))
+    active = [d for d in hour_total if d["count"] > 0]
+    if not active:
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    hours  = [d["hour"]  for d in hour_total]
+    counts = [d["count"] for d in hour_total]
+    total  = sum(counts)
+    avg    = round(total / 24, 1)
+
+    ax.plot(hours, counts, marker="o", linewidth=2.5, markersize=6,
+            color="#E45756", label="오탐 건수")
+    ax.fill_between(hours, counts, alpha=0.10, color="#E45756")
+    ax.axhline(y=avg, color="#F58518", linewidth=1.5, linestyle="--",
+               label=f"시간 평균 {avg:.1f}건")
+
+    # 야간 배경
+    ax.axvspan(0, 6,  alpha=0.06, color="#4C78A8", label="야간 00-06")
+    ax.axvspan(18, 23, alpha=0.06, color="#B279A2", label="저녁 18-24")
+
+    ax.set_xticks(hours)
+    ax.set_xticklabels([f"{h:02d}시" for h in hours], fontsize=10)
+    ax.tick_params(axis="y", labelsize=11)
+    ax.set_ylabel("건수", fontsize=12)
+    ax.set_title("시간별 오탐 분포 (0~23시)", fontsize=14, pad=12)
+    ax.legend(fontsize=11)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def do_load_time_dist(period: str):
+    try:
+        data      = api_get("/api/analysis/time_dist", {"period": period})
+        empty_fig = plt.figure(figsize=(20, 4))
+        if "error" in data:
+            err = f"<p style='color:red'>⚠ {data['error']}</p>"
+            return err, empty_fig, empty_fig, empty_fig
+        return (
+            render_time_dist_cards(data.get("cards", {})),
+            build_time_heatmap(data.get("hourly_events", {})),
+            build_time_line(data.get("hour_total", [])),
+            build_time_slot_bar(data.get("slots", [])),
+        )
+    except Exception as e:
+        import traceback
+        err = f"<p style='color:red'>⚠ <pre>{traceback.format_exc()}</pre></p>"
+        return err, plt.figure(figsize=(20, 4)), plt.figure(figsize=(20, 4)), plt.figure(figsize=(20, 4))
+
+
 # ── 기간별 조회 렌더러 ────────────────────────────────────────────────────────
 
 def build_period_chart(data: dict):
@@ -1040,81 +1433,78 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                 "</div>"
             )
             gr.HTML("""
-                <div style="display:flex;justify-content:center;gap:24px;padding:8px 0 32px">
+                <style>
+                  .home-card {
+                    width:160px;height:160px;border-radius:14px;
+                    display:flex;flex-direction:column;
+                    align-items:center;justify-content:center;
+                    gap:8px;cursor:pointer;user-select:none;transition:filter 0.2s;
+                  }
+                  .home-card:hover { filter: brightness(1.12); }
+                </style>
 
-                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('오늘의')){tabs[i].click();return;}} })()"
-                       style="width:180px;height:180px;border-radius:14px;
-                              border:2px solid rgba(99,190,123,0.6);
-                              background:rgba(99,190,123,0.08);
-                              display:flex;flex-direction:column;
-                              align-items:center;justify-content:center;
-                              gap:10px;cursor:pointer;user-select:none;
-                              transition:background 0.2s"
-                       onmouseover="this.style.background='rgba(99,190,123,0.18)'"
-                       onmouseout="this.style.background='rgba(99,190,123,0.08)'">
-                    <span style="font-size:2.4rem">📊</span>
-                    <span style="font-size:1.1rem;font-weight:600">오늘의 통계</span>
-                    <span style="font-size:0.8rem;opacity:0.6">Today Stats</span>
+                <!-- 1행: 매일 확인하는 것들 -->
+                <div style="display:flex;justify-content:center;gap:20px;padding:16px 0 12px">
+
+                  <div class="home-card"
+                       style="border:2px solid rgba(99,190,123,0.6);background:rgba(99,190,123,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('오늘의')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">📊</span>
+                    <span style="font-size:1rem;font-weight:600">오늘의 통계</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Today Stats</span>
                   </div>
 
-                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('서버')){tabs[i].click();return;}} })()"
-                       style="width:180px;height:180px;border-radius:14px;
-                              border:2px solid rgba(147,112,219,0.6);
-                              background:rgba(147,112,219,0.08);
-                              display:flex;flex-direction:column;
-                              align-items:center;justify-content:center;
-                              gap:10px;cursor:pointer;user-select:none;
-                              transition:background 0.2s"
-                       onmouseover="this.style.background='rgba(147,112,219,0.18)'"
-                       onmouseout="this.style.background='rgba(147,112,219,0.08)'">
-                    <span style="font-size:2.4rem">🖥</span>
-                    <span style="font-size:1.1rem;font-weight:600">서버 통계</span>
-                    <span style="font-size:0.8rem;opacity:0.6">Server Stats</span>
+                  <div class="home-card"
+                       style="border:2px solid rgba(72,168,168,0.6);background:rgba(72,168,168,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('기간별')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">📆</span>
+                    <span style="font-size:1rem;font-weight:600">기간별 조회</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Period Query</span>
                   </div>
 
-                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('조희')){tabs[i].click();return;}} })()"
-                       style="width:180px;height:180px;border-radius:14px;
-                              border:2px solid rgba(100,149,237,0.6);
-                              background:rgba(100,149,237,0.08);
-                              display:flex;flex-direction:column;
-                              align-items:center;justify-content:center;
-                              gap:10px;cursor:pointer;user-select:none;
-                              transition:background 0.2s"
-                       onmouseover="this.style.background='rgba(100,149,237,0.18)'"
-                       onmouseout="this.style.background='rgba(100,149,237,0.08)'">
-                    <span style="font-size:2.4rem">🔍</span>
-                    <span style="font-size:1.1rem;font-weight:600">조희</span>
-                    <span style="font-size:0.8rem;opacity:0.6">Search</span>
+                  <div class="home-card"
+                       style="border:2px solid rgba(0,188,212,0.6);background:rgba(0,188,212,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('분석')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">📉</span>
+                    <span style="font-size:1rem;font-weight:600">분석</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Analytics</span>
                   </div>
 
-                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('분석')){tabs[i].click();return;}} })()"
-                       style="width:180px;height:180px;border-radius:14px;
-                              border:2px solid rgba(0,188,212,0.6);
-                              background:rgba(0,188,212,0.08);
-                              display:flex;flex-direction:column;
-                              align-items:center;justify-content:center;
-                              gap:10px;cursor:pointer;user-select:none;
-                              transition:background 0.2s"
-                       onmouseover="this.style.background='rgba(0,188,212,0.18)'"
-                       onmouseout="this.style.background='rgba(0,188,212,0.08)'">
-                    <span style="font-size:2.4rem">📉</span>
-                    <span style="font-size:1.1rem;font-weight:600">분석</span>
-                    <span style="font-size:0.8rem;opacity:0.6">Analytics</span>
+                  <div class="home-card"
+                       style="border:2px solid rgba(100,149,237,0.6);background:rgba(100,149,237,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('조희')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">🔍</span>
+                    <span style="font-size:1rem;font-weight:600">조희</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Search</span>
                   </div>
 
-                  <div onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('설정')){tabs[i].click();return;}} })()"
-                       style="width:180px;height:180px;border-radius:14px;
-                              border:2px solid rgba(255,165,0,0.6);
-                              background:rgba(255,165,0,0.08);
-                              display:flex;flex-direction:column;
-                              align-items:center;justify-content:center;
-                              gap:10px;cursor:pointer;user-select:none;
-                              transition:background 0.2s"
-                       onmouseover="this.style.background='rgba(255,165,0,0.18)'"
-                       onmouseout="this.style.background='rgba(255,165,0,0.08)'">
-                    <span style="font-size:2.4rem">⚙️</span>
-                    <span style="font-size:1.1rem;font-weight:600">설정</span>
-                    <span style="font-size:0.8rem;opacity:0.6">Settings</span>
+                </div>
+
+                <!-- 2행: 주기적/관리용 -->
+                <div style="display:flex;justify-content:center;gap:20px;padding:4px 0 32px">
+
+                  <div class="home-card"
+                       style="border:2px solid rgba(245,133,24,0.6);background:rgba(245,133,24,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('요약')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">📈</span>
+                    <span style="font-size:1rem;font-weight:600">요약</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Summary</span>
+                  </div>
+
+                  <div class="home-card"
+                       style="border:2px solid rgba(147,112,219,0.6);background:rgba(147,112,219,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('서버')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">🖥</span>
+                    <span style="font-size:1rem;font-weight:600">서버 통계</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Server Stats</span>
+                  </div>
+
+                  <div class="home-card"
+                       style="border:2px solid rgba(255,165,0,0.6);background:rgba(255,165,0,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('설정')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">⚙️</span>
+                    <span style="font-size:1rem;font-weight:600">설정</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Settings</span>
                   </div>
 
                 </div>
@@ -1226,8 +1616,10 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                             gr.Markdown("##### 카메라별 미확인 순위")
                             processing_node_out = gr.HTML("")
 
-                    gr.Markdown("#### 일별 처리 현황")
+                    gr.Markdown("#### 일별 미확인율 추이")
                     processing_trend_out = gr.Plot(container=False)
+                    gr.Markdown("#### 일별 확인 완료 / 미확인 건수")
+                    processing_count_trend_out = gr.Plot(container=False)
 
                 # ── 정탐 / 오탐 ──────────────────────────────────────────
                 with gr.Tab("✅ 정탐 / 오탐"):
@@ -1255,6 +1647,58 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
                     gr.Markdown("#### 일별 오탐율 추이")
                     precision_trend_out = gr.Plot(container=False)
+                    gr.Markdown("#### 일별 정탐 / 오탐 건수")
+                    precision_count_trend_out = gr.Plot(container=False)
+
+                # ── 시간대 분석 ──────────────────────────────────────────
+                with gr.Tab("🕐 시간대 분석"):
+                    with gr.Row():
+                        time_dist_period = gr.Radio(
+                            choices=["오늘", "7일", "14일", "21일", "전체"],
+                            value="전체",
+                            label="기간",
+                            interactive=True,
+                        )
+                        btn_time_dist = gr.Button("🔄 조회", variant="primary", scale=1)
+
+                    time_dist_cards_out = gr.HTML("")
+
+                    gr.Markdown("#### 시간대 × 이벤트 히트맵")
+                    with gr.Row():
+                        time_dist_heatmap_out = gr.Plot(container=False)
+
+                    gr.Markdown("#### 시간별 분포 (0~23시)")
+                    with gr.Row():
+                        time_dist_line_out = gr.Plot(container=False)
+
+                    gr.Markdown("#### 시간대별 건수")
+                    with gr.Row():
+                        time_dist_slot_out = gr.Plot(container=False)
+
+                # ── 오탐 원인 ─────────────────────────────────────────────
+                with gr.Tab("⚠️ 오탐 원인"):
+                    with gr.Row():
+                        false_cause_period = gr.Radio(
+                            choices=["오늘", "7일", "14일", "21일", "전체"],
+                            value="전체",
+                            label="기간",
+                            interactive=True,
+                        )
+                        btn_false_cause = gr.Button("🔄 조회", variant="primary", scale=1)
+
+                    gr.Markdown("#### fls_pst_knd 입력 현황")
+                    false_cause_completion_out = gr.HTML("")
+
+                    gr.Markdown("#### 이벤트별 오탐 원인 분포")
+                    false_cause_chart_out = gr.Plot(container=False)
+
+                    with gr.Row():
+                        with gr.Column():
+                            gr.Markdown("##### 이벤트 × 원인 상세")
+                            false_cause_event_out = gr.HTML("")
+                        with gr.Column():
+                            gr.Markdown("##### 사용자 × 원인 상세")
+                            false_cause_user_out = gr.HTML("")
 
         # ── Tab 6: 설정 ──────────────────────────────────────────────────────
         with gr.Tab("⚙️ 설정", id=6):
@@ -1366,17 +1810,33 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
     _processing_outs = [
         processing_cards_out, processing_bar_out,
-        processing_event_out, processing_node_out, processing_trend_out,
+        processing_event_out, processing_node_out,
+        processing_trend_out, processing_count_trend_out,
     ]
     btn_processing.click(do_load_processing, inputs=[processing_period], outputs=_processing_outs)
     processing_period.change(do_load_processing, inputs=[processing_period], outputs=_processing_outs)
 
     _precision_outs = [
         precision_cards_out, precision_bar_out,
-        precision_event_out, precision_node_out, precision_trend_out,
+        precision_event_out, precision_node_out,
+        precision_trend_out, precision_count_trend_out,
     ]
     btn_precision.click(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
     precision_period.change(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
+
+    _time_dist_outs = [
+        time_dist_cards_out, time_dist_heatmap_out,
+        time_dist_line_out,  time_dist_slot_out,
+    ]
+    btn_time_dist.click(do_load_time_dist, inputs=[time_dist_period], outputs=_time_dist_outs)
+    time_dist_period.change(do_load_time_dist, inputs=[time_dist_period], outputs=_time_dist_outs)
+
+    _false_cause_outs = [
+        false_cause_completion_out, false_cause_chart_out,
+        false_cause_event_out, false_cause_user_out,
+    ]
+    btn_false_cause.click(do_load_false_cause, inputs=[false_cause_period], outputs=_false_cause_outs)
+    false_cause_period.change(do_load_false_cause, inputs=[false_cause_period], outputs=_false_cause_outs)
 
     btn_pq.click(
         do_period_query,

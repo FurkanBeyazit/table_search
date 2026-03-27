@@ -334,3 +334,217 @@ def get_precision(period: str = Query(default="전체")):
         "nodes":   nodes,
         "daily":   daily,
     }
+
+
+# ── /api/analysis/false_cause ─────────────────────────────────────────────────
+
+@router.get("/false_cause")
+def get_false_cause(period: str = Query(default="전체")):
+    """오탐 원인(fls_pst_knd) 분析. NULL 제외, 빈 문자열('') 포함."""
+    start     = _start(period)
+    dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
+    dt_params = [start] if start else []
+
+    # 1. 입력 완료율 (BHAR+CALAMITY 오탐 대비 fls_pst_knd 상태 breakdown)
+    comp_row = database.run_query(
+        f"SELECT "
+        f"  COUNT(*) AS total, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_knd IS NULL)  AS null_cnt, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_knd = '')     AS empty_cnt, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_knd IS NOT NULL AND fls_pst_knd != '') AS filled_cnt "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE prcs_yn = '1' AND fls_pst_yn = '0' "
+        f"AND evnt_knd IN (%s, %s) {dt_where}",
+        [BHVR_EVNT_KND, DST_EVNT_KND] + dt_params,
+    )
+    c         = comp_row[0] if comp_row else {}
+    comp_tot  = int(c.get("total",      0) or 0)
+    comp_null = int(c.get("null_cnt",   0) or 0)
+    comp_emp  = int(c.get("empty_cnt",  0) or 0)
+    comp_fill = int(c.get("filled_cnt", 0) or 0)
+
+    def pct(n): return round(n / comp_tot * 100, 1) if comp_tot > 0 else 0.0
+
+    completion = {
+        "total":      comp_tot,
+        "filled":     comp_fill,
+        "empty":      comp_emp,
+        "null_cnt":   comp_null,
+        "filled_pct": pct(comp_fill),
+        "empty_pct":  pct(comp_emp),
+        "null_pct":   pct(comp_null),
+    }
+
+    base_cond = (
+        f"prcs_yn = '1' AND fls_pst_yn = '0' "
+        f"AND evnt_knd IN ('{BHVR_EVNT_KND}', '{DST_EVNT_KND}') "
+        f"AND fls_pst_knd IS NOT NULL {dt_where}"
+    )
+
+    # 2. 원인별 합계 (NULL 제외, '' 포함)
+    cause_rows = database.run_query(
+        f"SELECT fls_pst_knd AS cause, COUNT(*) AS cnt "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE {base_cond} "
+        f"GROUP BY fls_pst_knd ORDER BY cnt DESC",
+        dt_params,
+    )
+    all_causes   = [r["cause"] for r in cause_rows]
+    cause_totals = {r["cause"]: int(r["cnt"]) for r in cause_rows}
+    total        = sum(cause_totals.values())
+
+    causes = [
+        {
+            "cause": c,
+            "cnt":   cause_totals[c],
+            "rate":  round(cause_totals[c] / total * 100, 1) if total > 0 else 0.0,
+        }
+        for c in all_causes
+    ]
+
+    # 3. 이벤트별 원인 분포
+    def ev_cause_query(table, knd):
+        return database.run_query(
+            f"SELECT b.{EVENT_COL} AS et, e.fls_pst_knd AS cause, COUNT(*) AS cnt "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn = '1' AND e.fls_pst_yn = '0' "
+            f"AND e.fls_pst_knd IS NOT NULL {dt_where} "
+            f"GROUP BY b.{EVENT_COL}, e.fls_pst_knd",
+            [knd] + dt_params,
+        )
+
+    ev_map = {}
+    for r in ev_cause_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_cause_query(DST_TABLE, DST_EVNT_KND):
+        ev_map.setdefault(r["et"], {})
+        ev_map[r["et"]][r["cause"]] = ev_map[r["et"]].get(r["cause"], 0) + int(r["cnt"])
+
+    events = [
+        {"event": ev, "cause_counts": ev_map[ev], "total": sum(ev_map[ev].values())}
+        for ev in ALL_EVENTS if ev in ev_map
+    ]
+
+    # 3. 사용자별 원인 분포
+    user_rows = database.run_query(
+        f"SELECT COALESCE(reg_id, '미확인') AS reg_id, "
+        f"  fls_pst_knd AS cause, COUNT(*) AS cnt "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE {base_cond} "
+        f"GROUP BY COALESCE(reg_id, '미확인'), fls_pst_knd",
+        dt_params,
+    )
+
+    user_map = {}
+    for r in user_rows:
+        uid = r["reg_id"]
+        user_map.setdefault(uid, {})
+        user_map[uid][r["cause"]] = user_map[uid].get(r["cause"], 0) + int(r["cnt"])
+
+    users = sorted(
+        [{"reg_id": uid, "cause_counts": cc, "total": sum(cc.values())}
+         for uid, cc in user_map.items()],
+        key=lambda x: -x["total"],
+    )
+
+    return {
+        "period":     period,
+        "completion": completion,
+        "all_causes": all_causes,
+        "total":      total,
+        "causes":     causes,
+        "events":     events,
+        "users":      users,
+    }
+
+
+# ── /api/analysis/time_dist ───────────────────────────────────────────────────
+
+@router.get("/time_dist")
+def get_time_dist(period: str = Query(default="전체")):
+    """시간대별 오탐 분析: 카드 + heatmap + 시간대 bar + 시간별 line."""
+    start     = _start(period)
+    dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
+    dt_params = [start] if start else []
+
+    base_filter = (
+        f"e.prcs_yn = '1' AND e.fls_pst_yn = '0' "
+        f"AND e.evnt_knd IN ('{BHVR_EVNT_KND}', '{DST_EVNT_KND}') {dt_where}"
+    )
+
+    # 1. 시간별 총계 (line + cards + slot bar 용)
+    hour_rows = database.run_query(
+        f"SELECT EXTRACT(HOUR FROM reg_dt)::int AS hr, COUNT(*) AS cnt "
+        f"FROM t_evnt_prcs_info e "
+        f"WHERE {base_filter} AND reg_dt IS NOT NULL "
+        f"GROUP BY hr ORDER BY hr",
+        dt_params,
+    )
+    hour_map   = {int(r["hr"]): int(r["cnt"]) for r in hour_rows if r["hr"] is not None}
+    total      = sum(hour_map.values())
+    hour_total = [{"hour": h, "count": hour_map.get(h, 0)} for h in range(24)]
+
+    # cards
+    if hour_map:
+        busiest_hr  = max(hour_map, key=hour_map.get)
+        quietest_hr = min(hour_map, key=hour_map.get)
+    else:
+        busiest_hr = quietest_hr = 0
+
+    night_cnt = sum(hour_map.get(h, 0) for h in range(0,  6))
+    day_cnt   = sum(hour_map.get(h, 0) for h in range(6, 18))
+    eve_cnt   = sum(hour_map.get(h, 0) for h in range(18, 24))
+
+    def pct(n): return round(n / total * 100, 1) if total > 0 else 0.0
+
+    cards = {
+        "busiest_hr":    busiest_hr,
+        "busiest_cnt":   hour_map.get(busiest_hr, 0),
+        "quietest_hr":   quietest_hr,
+        "quietest_cnt":  hour_map.get(quietest_hr, 0),
+        "night_rate":    pct(night_cnt),   # 00-06
+        "day_rate":      pct(day_cnt),     # 06-18
+        "total":         total,
+    }
+
+    # slots bar
+    slots = [
+        {"label": "야간 00-06", "count": night_cnt},
+        {"label": "오전 06-12", "count": sum(hour_map.get(h, 0) for h in range(6,  12))},
+        {"label": "오후 12-18", "count": sum(hour_map.get(h, 0) for h in range(12, 18))},
+        {"label": "저녁 18-24", "count": eve_cnt},
+    ]
+
+    # 2. 이벤트 × 시간 heatmap
+    def ev_hour_query(table, knd):
+        return database.run_query(
+            f"SELECT EXTRACT(HOUR FROM e.reg_dt)::int AS hr, "
+            f"  b.{EVENT_COL} AS et, COUNT(*) AS cnt "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn = '1' AND e.fls_pst_yn = '0' "
+            f"AND e.reg_dt IS NOT NULL {dt_where} "
+            f"GROUP BY hr, b.{EVENT_COL}",
+            [knd] + dt_params,
+        )
+
+    ev_hour = {}  # {event: {hour: count}}
+    for r in ev_hour_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_hour_query(DST_TABLE, DST_EVNT_KND):
+        if r["hr"] is None:
+            continue
+        ev_hour.setdefault(r["et"], {})
+        ev_hour[r["et"]][int(r["hr"])] = int(r["cnt"])
+
+    hourly_events = {
+        ev: [ev_hour.get(ev, {}).get(h, 0) for h in range(24)]
+        for ev in ALL_EVENTS
+    }
+
+    return {
+        "period":        period,
+        "cards":         cards,
+        "hour_total":    hour_total,
+        "slots":         slots,
+        "hourly_events": hourly_events,
+    }
