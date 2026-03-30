@@ -182,7 +182,7 @@ def get_processing(period: str = Query(default="전체")):
 
 @router.get("/precision")
 def get_precision(period: str = Query(default="전체")):
-    """정탐 / 오탐 분析: summary + event bazlı + node bazlı + günlük trend."""
+    """정탐 / 오탐 분석: summary + event bazlı + node bazlı + günlük trend."""
     start = _start(period)
     today = date.today()
 
@@ -340,7 +340,7 @@ def get_precision(period: str = Query(default="전체")):
 
 @router.get("/false_cause")
 def get_false_cause(period: str = Query(default="전체")):
-    """오탐 원인(fls_pst_knd) 분析. NULL 제외, 빈 문자열('') 포함."""
+    """오탐 원인(fls_pst_knd) 분석. NULL 제외, 빈 문자열('') 포함."""
     start     = _start(period)
     dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
     dt_params = [start] if start else []
@@ -462,7 +462,7 @@ def get_false_cause(period: str = Query(default="전체")):
 
 @router.get("/time_dist")
 def get_time_dist(period: str = Query(default="전체")):
-    """시간대별 오탐 분析: 카드 + heatmap + 시간대 bar + 시간별 line."""
+    """시간대별 오탐 분석: 카드 + heatmap + 시간대 bar + 시간별 line."""
     start     = _start(period)
     dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
     dt_params = [start] if start else []
@@ -535,6 +535,104 @@ def get_time_dist(period: str = Query(default="전체")):
             continue
         ev_hour.setdefault(r["et"], {})
         ev_hour[r["et"]][int(r["hr"])] = int(r["cnt"])
+
+    hourly_events = {
+        ev: [ev_hour.get(ev, {}).get(h, 0) for h in range(24)]
+        for ev in ALL_EVENTS
+    }
+
+    return {
+        "period":        period,
+        "cards":         cards,
+        "hour_total":    hour_total,
+        "slots":         slots,
+        "hourly_events": hourly_events,
+    }
+
+
+# ── /api/analysis/time_dist_all ───────────────────────────────────────────────
+
+@router.get("/time_dist_all")
+def get_time_dist_all(period: str = Query(default="전체")):
+    """시간대별 전체 이벤트 분석: 처리된 이벤트 기준 (prcs_yn IS NOT NULL, BHAR+CALAMITY)."""
+    start     = _start(period)
+    dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
+    dt_params = [start] if start else []
+
+    base_filter = (
+        f"prcs_yn IS NOT NULL "
+        f"AND evnt_knd IN ('{BHVR_EVNT_KND}', '{DST_EVNT_KND}') "
+        f"AND reg_dt IS NOT NULL {dt_where}"
+    )
+
+    # 1. 시간별 총계
+    hour_rows = database.run_query(
+        f"SELECT EXTRACT(HOUR FROM reg_dt)::int AS hr, COUNT(*) AS cnt "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE {base_filter} "
+        f"GROUP BY hr ORDER BY hr",
+        dt_params,
+    )
+
+    hour_map = {}
+    for r in hour_rows:
+        if r["hr"] is None:
+            continue
+        h = int(r["hr"])
+        hour_map[h] = hour_map.get(h, 0) + int(r["cnt"])
+
+    total      = sum(hour_map.values())
+    hour_total = [{"hour": h, "count": hour_map.get(h, 0)} for h in range(24)]
+
+    if hour_map:
+        busiest_hr  = max(hour_map, key=hour_map.get)
+        quietest_hr = min(hour_map, key=hour_map.get)
+    else:
+        busiest_hr = quietest_hr = 0
+
+    night_cnt = sum(hour_map.get(h, 0) for h in range(0,  6))
+    day_cnt   = sum(hour_map.get(h, 0) for h in range(6, 18))
+    eve_cnt   = sum(hour_map.get(h, 0) for h in range(18, 24))
+
+    def pct(n): return round(n / total * 100, 1) if total > 0 else 0.0
+
+    cards = {
+        "busiest_hr":    busiest_hr,
+        "busiest_cnt":   hour_map.get(busiest_hr, 0),
+        "quietest_hr":   quietest_hr,
+        "quietest_cnt":  hour_map.get(quietest_hr, 0),
+        "night_rate":    pct(night_cnt),
+        "day_rate":      pct(day_cnt),
+        "total":         total,
+    }
+
+    slots = [
+        {"label": "야간 00-06", "count": night_cnt},
+        {"label": "오전 06-12", "count": sum(hour_map.get(h, 0) for h in range(6,  12))},
+        {"label": "오후 12-18", "count": sum(hour_map.get(h, 0) for h in range(12, 18))},
+        {"label": "저녁 18-24", "count": eve_cnt},
+    ]
+
+    # 2. 이벤트 × 시간 heatmap (t_evnt_prcs_info JOIN BHVR/DST)
+    def ev_hour_query(table, knd):
+        return database.run_query(
+            f"SELECT EXTRACT(HOUR FROM e.reg_dt)::int AS hr, "
+            f"  b.{EVENT_COL} AS et, COUNT(*) AS cnt "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
+            f"AND e.reg_dt IS NOT NULL {dt_where} "
+            f"GROUP BY hr, b.{EVENT_COL}",
+            [knd] + dt_params,
+        )
+
+    ev_hour = {}
+    for r in ev_hour_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_hour_query(DST_TABLE, DST_EVNT_KND):
+        if r["hr"] is None:
+            continue
+        ev_hour.setdefault(r["et"], {})
+        ev_hour[r["et"]][int(r["hr"])] = ev_hour[r["et"]].get(int(r["hr"]), 0) + int(r["cnt"])
 
     hourly_events = {
         ev: [ev_hour.get(ev, {}).get(h, 0) for h in range(24)]

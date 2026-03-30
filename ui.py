@@ -1149,7 +1149,7 @@ def do_load_false_cause(period: str):
 
 # ── 시간대 분석 렌더러 ────────────────────────────────────────────────────────
 
-def render_time_dist_cards(cards: dict) -> str:
+def render_time_dist_cards(cards: dict, total_label: str = "오탐 총계") -> str:
     if not cards:
         return "<p style='opacity:0.5'>데이터 없음</p>"
     bh  = cards.get("busiest_hr",   0)
@@ -1165,7 +1165,7 @@ def render_time_dist_cards(cards: dict) -> str:
         "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px'>"
         f"<div style='{cs};background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.2)'>"
         f"<div style='font-size:1.8rem;font-weight:700'>{tot:,}</div>"
-        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>오탐 총계</div></div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>{total_label}</div></div>"
 
         f"<div style='{cs};background:rgba(228,87,86,0.08);border:1px solid rgba(228,87,86,0.4)'>"
         f"<div style='font-size:1.8rem;font-weight:700;color:#E45756'>{bh:02d}시</div>"
@@ -1190,7 +1190,7 @@ def render_time_dist_cards(cards: dict) -> str:
     )
 
 
-def build_time_heatmap(hourly_events: dict):
+def build_time_heatmap(hourly_events: dict, title: str = "시간대 × 이벤트 오탐 히트맵"):
     import numpy as np
     active_evs = [ev for ev in ALL_EVENTS if any(hourly_events.get(ev, []))]
     if not active_evs:
@@ -1211,7 +1211,7 @@ def build_time_heatmap(hourly_events: dict):
     ax.set_yticks(range(len(active_evs)))
     ax.set_yticklabels(active_evs, fontsize=11)
     ax.set_xlabel("시간 (hour)", fontsize=12)
-    ax.set_title("시간대 × 이벤트 오탐 히트맵", fontsize=14, pad=12)
+    ax.set_title(title, fontsize=14, pad=12)
 
     # 값 표시
     for i in range(len(active_evs)):
@@ -1252,7 +1252,7 @@ def build_time_slot_bar(slots: list):
     return fig
 
 
-def build_time_line(hour_total: list):
+def build_time_line(hour_total: list, title: str = "시간별 오탐 분포 (0~23시)"):
     fig, ax = plt.subplots(figsize=(20, 5))
     active = [d for d in hour_total if d["count"] > 0]
     if not active:
@@ -1280,12 +1280,31 @@ def build_time_line(hour_total: list):
     ax.set_xticklabels([f"{h:02d}시" for h in hours], fontsize=10)
     ax.tick_params(axis="y", labelsize=11)
     ax.set_ylabel("건수", fontsize=12)
-    ax.set_title("시간별 오탐 분포 (0~23시)", fontsize=14, pad=12)
+    ax.set_title(title, fontsize=14, pad=12)
     ax.legend(fontsize=11)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     fig.tight_layout()
     return fig
+
+
+def do_load_time_dist_all(period: str):
+    try:
+        data      = api_get("/api/analysis/time_dist_all", {"period": period})
+        empty_fig = plt.figure(figsize=(20, 4))
+        if "error" in data:
+            err = f"<p style='color:red'>⚠ {data['error']}</p>"
+            return err, empty_fig, empty_fig, empty_fig
+        return (
+            render_time_dist_cards(data.get("cards", {}), total_label="이벤트 총계"),
+            build_time_heatmap(data.get("hourly_events", {}), title="시간대 × 이벤트 히트맵 (전체)"),
+            build_time_line(data.get("hour_total", []), title="시간별 이벤트 분포 (0~23시)"),
+            build_time_slot_bar(data.get("slots", [])),
+        )
+    except Exception as e:
+        import traceback
+        err = f"<p style='color:red'>⚠ <pre>{traceback.format_exc()}</pre></p>"
+        return err, plt.figure(figsize=(20, 4)), plt.figure(figsize=(20, 4)), plt.figure(figsize=(20, 4))
 
 
 def do_load_time_dist(period: str):
@@ -1652,28 +1671,54 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
                 # ── 시간대 분석 ──────────────────────────────────────────
                 with gr.Tab("🕐 시간대 분석"):
-                    with gr.Row():
-                        time_dist_period = gr.Radio(
-                            choices=["오늘", "7일", "14일", "21일", "전체"],
-                            value="전체",
-                            label="기간",
-                            interactive=True,
-                        )
-                        btn_time_dist = gr.Button("🔄 조회", variant="primary", scale=1)
 
-                    time_dist_cards_out = gr.HTML("")
+                    with gr.Accordion("📊 전체 이벤트 시간 분석", open=False):
+                        with gr.Row():
+                            time_all_period = gr.Radio(
+                                choices=["오늘", "7일", "14일", "21일", "전체"],
+                                value="전체",
+                                label="기간",
+                                interactive=True,
+                            )
+                            btn_time_all = gr.Button("🔄 조회", variant="primary", scale=1)
 
-                    gr.Markdown("#### 시간대 × 이벤트 히트맵")
-                    with gr.Row():
-                        time_dist_heatmap_out = gr.Plot(container=False)
+                        time_all_cards_out = gr.HTML("")
 
-                    gr.Markdown("#### 시간별 분포 (0~23시)")
-                    with gr.Row():
-                        time_dist_line_out = gr.Plot(container=False)
+                        gr.Markdown("#### 시간대 × 이벤트 히트맵 (전체)")
+                        with gr.Row():
+                            time_all_heatmap_out = gr.Plot(container=False)
 
-                    gr.Markdown("#### 시간대별 건수")
-                    with gr.Row():
-                        time_dist_slot_out = gr.Plot(container=False)
+                        gr.Markdown("#### 시간별 이벤트 분포 (0~23시)")
+                        with gr.Row():
+                            time_all_line_out = gr.Plot(container=False)
+
+                        gr.Markdown("#### 시간대별 건수")
+                        with gr.Row():
+                            time_all_slot_out = gr.Plot(container=False)
+
+                    with gr.Accordion("⚠️ 오탐 시간 분석", open=False):
+                        with gr.Row():
+                            time_dist_period = gr.Radio(
+                                choices=["오늘", "7일", "14일", "21일", "전체"],
+                                value="전체",
+                                label="기간",
+                                interactive=True,
+                            )
+                            btn_time_dist = gr.Button("🔄 조회", variant="primary", scale=1)
+
+                        time_dist_cards_out = gr.HTML("")
+
+                        gr.Markdown("#### 시간대 × 이벤트 오탐 히트맵")
+                        with gr.Row():
+                            time_dist_heatmap_out = gr.Plot(container=False)
+
+                        gr.Markdown("#### 시간별 오탐 분포 (0~23시)")
+                        with gr.Row():
+                            time_dist_line_out = gr.Plot(container=False)
+
+                        gr.Markdown("#### 시간대별 오탐 건수")
+                        with gr.Row():
+                            time_dist_slot_out = gr.Plot(container=False)
 
                 # ── 오탐 원인 ─────────────────────────────────────────────
                 with gr.Tab("⚠️ 오탐 원인"):
@@ -1721,12 +1766,18 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
                     gr.Markdown("---")
                     gr.Markdown("### 뷰어별 노드 목록")
+                    _init_viewers = get_viewer_names()
+                    _init_first   = _init_viewers[0] if _init_viewers else None
                     viewer_radio = gr.Radio(
-                        choices=[],
+                        choices=_init_viewers,
+                        value=_init_first,
                         label="Viewer 선택",
                         interactive=True,
                     )
-                    nodes_out = gr.HTML("<p style='opacity:0.5'>Import 후 표시됩니다</p>")
+                    nodes_out = gr.HTML(
+                        do_load_nodes_by_viewer(_init_first) if _init_first
+                        else "<p style='opacity:0.5'>등록된 Viewer가 없습니다</p>"
+                    )
 
                     gr.Markdown("---")
                     gr.Markdown("### 수동 추가")
@@ -1823,6 +1874,13 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     ]
     btn_precision.click(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
     precision_period.change(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
+
+    _time_all_outs = [
+        time_all_cards_out, time_all_heatmap_out,
+        time_all_line_out,  time_all_slot_out,
+    ]
+    btn_time_all.click(do_load_time_dist_all, inputs=[time_all_period], outputs=_time_all_outs)
+    time_all_period.change(do_load_time_dist_all, inputs=[time_all_period], outputs=_time_all_outs)
 
     _time_dist_outs = [
         time_dist_cards_out, time_dist_heatmap_out,
