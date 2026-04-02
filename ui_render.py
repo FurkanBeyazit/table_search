@@ -197,89 +197,6 @@ def render_server_stats(data: dict) -> str:
     return html
 
 
-def render_processing_cards(summary: dict) -> str:
-    if not summary:
-        return ""
-    tot  = summary.get("total", 0)
-    proc = summary.get("processed", 0)
-    unpr = summary.get("unprocessed", 0)
-    rate = summary.get("rate", 0.0)
-
-    cs = "border-radius:10px;padding:18px 24px;text-align:center;flex:1;min-width:120px"
-    return (
-        "<div style='display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px'>"
-        f"<div style='{cs};background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.2)'>"
-        f"<div style='font-size:2rem;font-weight:700'>{tot:,}</div>"
-        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>전체</div></div>"
-
-        f"<div style='{cs};background:rgba(84,162,75,0.08);border:1px solid rgba(84,162,75,0.35)'>"
-        f"<div style='font-size:2rem;font-weight:700;color:#54A24B'>{proc:,}</div>"
-        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>확인 완료</div></div>"
-
-        f"<div style='{cs};background:rgba(228,87,86,0.08);border:1px solid rgba(228,87,86,0.35)'>"
-        f"<div style='font-size:2rem;font-weight:700;color:#E45756'>{unpr:,}</div>"
-        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>미확인</div></div>"
-
-        f"<div style='{cs};background:rgba(76,120,168,0.08);border:1px solid rgba(76,120,168,0.35)'>"
-        f"<div style='font-size:2rem;font-weight:700;color:#4C78A8'>{rate}%</div>"
-        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>처리율</div></div>"
-        "</div>"
-    )
-
-
-def render_processing_event_table(events: list) -> str:
-    active = [e for e in events if e["total"] > 0]
-    if not active:
-        return "<p style='opacity:0.5'>데이터 없음</p>"
-
-    html  = "<div style='overflow-x:auto'>"
-    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
-    html += (
-        f"<tr><th {TH}>이벤트</th>"
-        f"<th {TH_C}>확인 완료</th><th {TH_C}>미확인</th>"
-        f"<th {TH_C}>합계</th><th {TH_C}>미확인율 %</th></tr>"
-    )
-    for e in active:
-        rate = e["unpr_rate"]
-        rc   = "#E45756" if rate > 30 else "#F58518" if rate > 10 else "inherit"
-        html += (
-            f"<tr><td {TD}><b>{e['event']}</b></td>"
-            f"<td {TD_C} style='color:#54A24B'>{e['processed']:,}</td>"
-            f"<td {TD_C} style='color:#E45756'>{e['unprocessed']:,}</td>"
-            f"<td {TD_C}>{e['total']:,}</td>"
-            f"<td {TD_C}><b style='color:{rc}'>{rate}%</b></td></tr>"
-        )
-    html += "</table></div>"
-    return html
-
-
-def render_processing_node_table(nodes: list) -> str:
-    if not nodes:
-        return "<p style='opacity:0.5'>데이터 없음</p>"
-
-    html  = "<div style='overflow-x:auto;max-height:400px;overflow-y:auto'>"
-    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
-    html += (
-        f"<tr><th {TH}>Node ID</th><th {TH}>Name</th><th {TH_C}>Ch</th>"
-        f"<th {TH_C}>확인 완료</th><th {TH_C}>미확인</th>"
-        f"<th {TH_C}>합계</th><th {TH_C}>미확인율 %</th></tr>"
-    )
-    for n in nodes:
-        rate = n["unpr_rate"]
-        rc   = "#E45756" if rate > 30 else "#F58518" if rate > 10 else "inherit"
-        html += (
-            f"<tr><td {TD}>{n['node_id']}</td>"
-            f"<td {TD}>{n.get('node_name', '')}</td>"
-            f"<td {TD_C}>{n['ch']}</td>"
-            f"<td {TD_C} style='color:#54A24B'>{n['processed']:,}</td>"
-            f"<td {TD_C} style='color:#E45756'>{n['unprocessed']:,}</td>"
-            f"<td {TD_C}>{n['total']:,}</td>"
-            f"<td {TD_C}><b style='color:{rc}'>{rate}%</b></td></tr>"
-        )
-    html += "</table></div>"
-    return html
-
-
 def render_precision_cards(summary: dict) -> str:
     if not summary:
         return ""
@@ -583,6 +500,88 @@ def render_time_dist_cards(cards: dict, total_label: str = "오탐 총계") -> s
         f"<div style='font-size:0.8rem;opacity:0.5'>06 ~ 18시</div></div>"
         "</div>"
     )
+
+
+def render_operator_table(data: dict) -> str:
+    operators    = data.get("operators", [])
+    avg_odam     = data.get("avg_odam_rate", 0.0)
+    avg_per      = data.get("avg_per_person", 0.0)
+    date_range   = data.get("date_range", "")
+
+    if not operators:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    cs = "border-radius:10px;padding:12px 18px;text-align:center;min-width:140px"
+    summary_html = (
+        "<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px'>"
+        f"<div style='{cs};background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.2)'>"
+        f"<div style='font-size:1.6rem;font-weight:700'>{data.get('total_operators',0)}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>운영자 수</div></div>"
+
+        f"<div style='{cs};background:rgba(76,120,168,0.08);border:1px solid rgba(76,120,168,0.4)'>"
+        f"<div style='font-size:1.6rem;font-weight:700;color:#4C78A8'>{avg_per:,.1f}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>인당 평균 처리</div></div>"
+
+        f"<div style='{cs};background:rgba(228,87,86,0.08);border:1px solid rgba(228,87,86,0.4)'>"
+        f"<div style='font-size:1.6rem;font-weight:700;color:#E45756'>{avg_odam}%</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>전체 평균 오탐률</div></div>"
+
+        f"<div style='{cs};background:rgba(128,128,128,0.05);border:1px solid rgba(128,128,128,0.15)'>"
+        f"<div style='font-size:0.85rem;font-weight:600;margin-top:6px'>📅 {date_range}</div>"
+        f"<div style='font-size:0.75rem;opacity:0.5;margin-top:4px'>최근 30일</div></div>"
+        "</div>"
+    )
+
+    html  = summary_html
+    html += "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%'>"
+    html += (
+        f"<tr>"
+        f"<th {TH}>운영자</th>"
+        f"<th {TH_C}>총계</th>"
+        f"<th {TH_C}>정탐</th>"
+        f"<th {TH_C}>오탐</th>"
+        f"<th {TH_C}>원인 미입력</th>"
+        f"<th {TH_C}>처리 비중</th>"
+        f"<th {TH_C}>오탐률</th>"
+        f"<th {TH_C}>오탐률 비교</th>"
+        f"</tr>"
+    )
+
+    total_all = sum(op["total"] for op in operators) or 1
+
+    for op in operators:
+        rate      = op["odam_rate"]
+        share     = round(op["total"] / total_all * 100, 1)
+        diff      = round(rate - avg_odam, 1)
+
+        # color based on odam_rate vs average
+        if rate > avg_odam:
+            row_color = "rgba(228,87,86,0.07)"
+            badge_color = "#E45756"
+            arrow = f"▲ +{diff}%"
+        else:
+            row_color = "rgba(76,120,168,0.07)"
+            badge_color = "#4C78A8"
+            arrow = f"▼ {diff}%"
+
+        row_style = f"style='background:{row_color}'"
+
+        html += (
+            f"<tr {row_style}>"
+            f"<td {TD}><b>{op['reg_id']}</b></td>"
+            f"<td {TD_C}>{op['total']:,}</td>"
+            f"<td {TD_C}>{op['jeongdam']:,}</td>"
+            f"<td {TD_C}>{op['odam']:,}</td>"
+            f"<td {TD_C}>{op['miipryeok']:,}</td>"
+            f"<td {TD_C}>{share}%</td>"
+            f"<td {TD_C}><b>{rate}%</b></td>"
+            f"<td {TD_C}><span style='color:{badge_color};font-weight:600'>{arrow}</span></td>"
+            f"</tr>"
+        )
+
+    html += "</table></div>"
+    return html
 
 
 def render_period_list(data: dict) -> str:

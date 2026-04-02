@@ -21,163 +21,6 @@ def _start(period: str):
     return date.today() - timedelta(days=PERIOD_DAYS[period])
 
 
-# ── /api/analysis/processing ─────────────────────────────────────────────────
-
-@router.get("/processing")
-def get_processing(period: str = Query(default="전체")):
-    """처리 현황: 확인/미확인 summary + event bazlı + node bazlı + günlük trend."""
-    start = _start(period)
-    today = date.today()
-
-    dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
-    dt_params = [start] if start else []
-
-    # 1. Summary ────────────────────────────────────────────────────────────
-    s = database.run_query(
-        f"SELECT "
-        f"  COUNT(*) AS total, "
-        f"  COUNT(*) FILTER (WHERE prcs_yn = '1') AS processed, "
-        f"  COUNT(*) FILTER (WHERE prcs_yn = '0') AS unprocessed "
-        f"FROM t_evnt_prcs_info "
-        f"WHERE prcs_yn IS NOT NULL {dt_where}",
-        dt_params,
-    )
-    row  = s[0] if s else {}
-    tot  = int(row.get("total",       0) or 0)
-    proc = int(row.get("processed",   0) or 0)
-    unpr = int(row.get("unprocessed", 0) or 0)
-    rate = round(proc / tot * 100, 1) if tot > 0 else 0.0
-
-    summary = {"total": tot, "processed": proc, "unprocessed": unpr, "rate": rate}
-
-    # 2. Event bazlı ────────────────────────────────────────────────────────
-    def ev_query(table, knd):
-        return database.run_query(
-            f"SELECT b.{EVENT_COL} AS et, "
-            f"  COUNT(*) AS total, "
-            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1') AS processed, "
-            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '0') AS unprocessed "
-            f"FROM t_evnt_prcs_info e "
-            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
-            f"  ON b.seq = e.evnt_seq "
-            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL {dt_where} "
-            f"GROUP BY b.{EVENT_COL}",
-            [knd] + dt_params,
-        )
-
-    ev_map = {}
-    for r in ev_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_query(DST_TABLE, DST_EVNT_KND):
-        t = int(r["total"]       or 0)
-        p = int(r["processed"]   or 0)
-        u = int(r["unprocessed"] or 0)
-        ev_map[r["et"]] = {
-            "processed":   p,
-            "unprocessed": u,
-            "total":       t,
-            "unpr_rate":   round(u / t * 100, 1) if t > 0 else 0.0,
-        }
-
-    empty_ev = {"processed": 0, "unprocessed": 0, "total": 0, "unpr_rate": 0.0}
-    events = [{"event": ev, **ev_map.get(ev, empty_ev)} for ev in ALL_EVENTS]
-
-    # 3. Node bazlı ─────────────────────────────────────────────────────────
-    def node_query(table, knd):
-        return database.run_query(
-            f"SELECT CAST(b.node_id AS TEXT) AS node_id, CAST(b.ch AS TEXT) AS ch, "
-            f"  COUNT(*) AS total, "
-            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1') AS processed, "
-            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '0') AS unprocessed "
-            f"FROM t_evnt_prcs_info e "
-            f"JOIN (SELECT DISTINCT ON (seq) seq, node_id, ch FROM {table} ORDER BY seq) b "
-            f"  ON b.seq = e.evnt_seq "
-            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL {dt_where} "
-            f"GROUP BY b.node_id, b.ch",
-            [knd] + dt_params,
-        )
-
-    node_map = {}
-    for r in node_query(BHVR_TABLE, BHVR_EVNT_KND) + node_query(DST_TABLE, DST_EVNT_KND):
-        key = (r["node_id"], r["ch"])
-        if key not in node_map:
-            node_map[key] = {"processed": 0, "unprocessed": 0, "total": 0}
-        node_map[key]["processed"]   += int(r["processed"]   or 0)
-        node_map[key]["unprocessed"] += int(r["unprocessed"] or 0)
-        node_map[key]["total"]       += int(r["total"]       or 0)
-
-    name_map = {}
-    if node_map:
-        ids = list({k[0] for k in node_map})
-        ph  = ",".join(["%s"] * len(ids))
-        try:
-            name_rows = database.run_query(
-                f"SELECT DISTINCT ON (CAST(node_id AS TEXT)) "
-                f"CAST(node_id AS TEXT) AS nid, name "
-                f"FROM t_viewer_node WHERE CAST(node_id AS TEXT) IN ({ph})",
-                ids,
-            )
-            name_map = {r["nid"]: r["name"] for r in name_rows}
-        except Exception:
-            pass
-
-    nodes = []
-    for (nid, ch), v in sorted(node_map.items(), key=lambda x: -x[1]["unprocessed"]):
-        t = v["total"]
-        nodes.append({
-            "node_id":     nid,
-            "node_name":   name_map.get(nid, ""),
-            "ch":          ch,
-            "processed":   v["processed"],
-            "unprocessed": v["unprocessed"],
-            "total":       t,
-            "unpr_rate":   round(v["unprocessed"] / t * 100, 1) if t > 0 else 0.0,
-        })
-
-    # 4. Günlük trend ───────────────────────────────────────────────────────
-    daily_rows = database.run_query(
-        f"SELECT DATE(reg_dt) AS day, "
-        f"  COUNT(*) AS total, "
-        f"  COUNT(*) FILTER (WHERE prcs_yn = '1') AS processed, "
-        f"  COUNT(*) FILTER (WHERE prcs_yn = '0') AS unprocessed "
-        f"FROM t_evnt_prcs_info "
-        f"WHERE 1=1 {dt_where} "
-        f"GROUP BY DATE(reg_dt) ORDER BY day",
-        dt_params,
-    )
-    daily_map = {str(r["day"]): r for r in daily_rows}
-
-    if start is None:
-        actual_start = (date.fromisoformat(min(daily_map.keys()))
-                        if daily_map else today)
-    else:
-        actual_start = start
-    days_count = (today - actual_start).days + 1
-
-    daily = []
-    for i in range(days_count):
-        d  = actual_start + timedelta(days=i)
-        ds = str(d)
-        r  = daily_map.get(ds, {})
-        t  = int(r.get("total",       0) or 0)
-        p  = int(r.get("processed",   0) or 0)
-        u  = int(r.get("unprocessed", 0) or 0)
-        daily.append({
-            "date":        ds,
-            "label":       KR_DAYS[d.weekday()],
-            "processed":   p,
-            "unprocessed": u,
-            "total":       t,
-            "unpr_rate":   round(u / t * 100, 1) if t > 0 else 0.0,
-        })
-
-    return {
-        "period":  period,
-        "summary": summary,
-        "events":  events,
-        "nodes":   nodes,
-        "daily":   daily,
-    }
-
-
 # ── /api/analysis/precision ───────────────────────────────────────────────────
 
 @router.get("/precision")
@@ -645,4 +488,131 @@ def get_time_dist_all(period: str = Query(default="전체")):
         "hour_total":    hour_total,
         "slots":         slots,
         "hourly_events": hourly_events,
+    }
+
+
+# ── /api/analysis/operator_summary ────────────────────────────────────────────
+
+@router.get("/operator_summary")
+def get_operator_summary():
+    """운영자 목록 전체 기간, 통계는 최근 30일 기준."""
+    from datetime import date as _d, timedelta
+    since = _d.today() - timedelta(days=29)
+    rows = database.run_query(
+        f"SELECT COALESCE(reg_id, '미확인') AS reg_id, "
+        f"  COUNT(*) FILTER (WHERE DATE(reg_dt) >= %s) AS total, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn != '0' AND DATE(reg_dt) >= %s) AS jeongdam, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0'  AND DATE(reg_dt) >= %s) AS odam, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0' AND (fls_pst_knd IS NULL OR fls_pst_knd = '') AND DATE(reg_dt) >= %s) AS miipryeok "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE prcs_yn IS NOT NULL "
+        f"AND evnt_knd IN (%s, %s) "
+        f"GROUP BY COALESCE(reg_id, '미확인') "
+        f"ORDER BY total DESC",
+        [since, since, since, since, BHVR_EVNT_KND, DST_EVNT_KND],
+    )
+
+    operators = []
+    for r in rows:
+        total = int(r["total"] or 0)
+        odam  = int(r["odam"]  or 0)
+        operators.append({
+            "reg_id":    r["reg_id"],
+            "total":     total,
+            "jeongdam":  int(r["jeongdam"]  or 0),
+            "odam":      odam,
+            "miipryeok": int(r["miipryeok"] or 0),
+            "odam_rate": round(odam / total * 100, 1) if total > 0 else 0.0,
+        })
+
+    total_all  = sum(op["total"] for op in operators)
+    total_odam = sum(op["odam"]  for op in operators)
+    avg_odam_rate   = round(total_odam / total_all * 100, 1) if total_all > 0 else 0.0
+    avg_per_person  = round(total_all / len(operators), 1)   if operators   else 0.0
+
+    return {
+        "operators":       operators,
+        "avg_odam_rate":   avg_odam_rate,
+        "avg_per_person":  avg_per_person,
+        "total_operators": len(operators),
+        "date_range":      "최근 30일",
+    }
+
+
+# ── /api/analysis/operator_chart ──────────────────────────────────────────────
+
+@router.get("/operator_chart")
+def get_operator_chart(reg_id: str = Query(...)):
+    """선택 운영자의 일별 정탐/오탐 × 이벤트 현황 (최근 30일)."""
+    from datetime import date as _d, timedelta
+    KR_DAYS  = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
+    today    = _d.today()
+    date_cond = "AND DATE(e.reg_dt) >= %s "
+    date_params_extra: list = [today - timedelta(days=29)]
+
+    def query_events(table, knd):
+        return database.run_query(
+            f"SELECT DATE(e.reg_dt) AS day, b.{EVENT_COL} AS et, "
+            f"  SUM(CASE WHEN e.fls_pst_yn != '0' THEN 1 ELSE 0 END) AS jeongdam, "
+            f"  SUM(CASE WHEN e.fls_pst_yn  = '0' THEN 1 ELSE 0 END) AS odam "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
+            f"AND COALESCE(e.reg_id, '미확인') = %s "
+            f"{date_cond}"
+            f"GROUP BY DATE(e.reg_dt), b.{EVENT_COL} ORDER BY day",
+            [knd, reg_id] + date_params_extra,
+        )
+
+    # day → et → {jeongdam, odam}
+    day_map = {}
+    all_events = set()
+    for r in query_events(BHVR_TABLE, BHVR_EVNT_KND) + query_events(DST_TABLE, DST_EVNT_KND):
+        if r["day"] is None or r["et"] is None:
+            continue
+        ds  = str(r["day"])
+        et  = r["et"]
+        all_events.add(et)
+        day_map.setdefault(ds, {})
+        day_map[ds].setdefault(et, {"jeongdam": 0, "odam": 0})
+        day_map[ds][et]["jeongdam"] += int(r["jeongdam"] or 0)
+        day_map[ds][et]["odam"]     += int(r["odam"]     or 0)
+
+    # build ordered day list (only days with data, skip NULL dates)
+    from datetime import date as _date
+    days = []
+    for ds in sorted(k for k in day_map.keys() if k and k != "None"):
+        d = _date.fromisoformat(ds)
+        days.append({
+            "date":   ds,
+            "label":  KR_DAYS[d.weekday()],
+            "events": day_map[ds],
+        })
+
+    # summary for the operator (전체 기간)
+    summary_rows = database.run_query(
+        f"SELECT "
+        f"  COUNT(*) AS total, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn != '0') AS jeongdam, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn  = '0') AS odam "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE prcs_yn IS NOT NULL AND evnt_knd IN (%s, %s) "
+        f"AND COALESCE(reg_id, '미확인') = %s",
+        [BHVR_EVNT_KND, DST_EVNT_KND, reg_id],
+    )
+    s = summary_rows[0] if summary_rows else {}
+    total = int(s.get("total", 0) or 0)
+    odam  = int(s.get("odam",  0) or 0)
+
+    return {
+        "reg_id":    reg_id,
+        "days":      days,
+        "all_events": sorted(all_events),
+        "summary": {
+            "total":     total,
+            "jeongdam":  int(s.get("jeongdam", 0) or 0),
+            "odam":      odam,
+            "odam_rate": round(odam / total * 100, 1) if total > 0 else 0.0,
+        },
     }

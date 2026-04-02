@@ -158,107 +158,6 @@ def build_server_histogram(data: dict):
     return fig
 
 
-def build_processing_bar(events: list):
-    fig, ax = plt.subplots(figsize=(14, 5))
-    active = [e for e in events if e["total"] > 0]
-    if not active:
-        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
-                transform=ax.transAxes, fontsize=14, color="gray")
-        ax.axis("off")
-        return fig
-
-    labels = [e["event"]       for e in active]
-    proc_v = [e["processed"]   for e in active]
-    unpr_v = [e["unprocessed"] for e in active]
-    x, w   = range(len(labels)), 0.35
-
-    b1 = ax.bar([i - w/2 for i in x], proc_v, w, label="확인 완료", color="#54A24B", alpha=0.85)
-    b2 = ax.bar([i + w/2 for i in x], unpr_v, w, label="미확인",    color="#E45756", alpha=0.85)
-
-    for bar in b1 + b2:
-        h = bar.get_height()
-        if h > 0:
-            ax.text(bar.get_x() + bar.get_width() / 2, h + 0.5, str(int(h)),
-                    ha="center", va="bottom", fontsize=10)
-
-    ax.set_xticks(list(x))
-    ax.set_xticklabels(labels, fontsize=13)
-    ax.tick_params(axis="y", labelsize=12)
-    ax.legend(fontsize=13)
-    ax.set_title("이벤트별 처리 현황", fontsize=14, pad=12)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-def build_processing_trend(daily: list):
-    """미확인율 % line chart + 평균 점선."""
-    fig, ax = plt.subplots(figsize=(20, 4))
-    active = [d for d in daily if d["total"] > 0]
-    if not active:
-        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
-                transform=ax.transAxes, fontsize=14, color="gray")
-        ax.axis("off")
-        return fig
-
-    labels    = [f"{d['date'][5:]}({d['label']})" for d in daily]
-    rates     = [d["unpr_rate"] for d in daily]
-    xs        = range(len(labels))
-    total_unp = sum(d["unprocessed"] for d in daily)
-    total_all = sum(d["total"]       for d in daily)
-    avg       = round(total_unp / total_all * 100, 1) if total_all > 0 else 0
-
-    ax.plot(xs, rates, marker="o", linewidth=2.5, markersize=6,
-            color="#E45756", label="미확인율 %")
-    ax.fill_between(xs, rates, alpha=0.10, color="#E45756")
-    ax.axhline(y=avg, color="#F58518", linewidth=1.5, linestyle="--",
-               label=f"평균 {avg:.1f}%")
-    ax.set_xticks(list(xs))
-    ax.set_xticklabels(labels, rotation=45, fontsize=11)
-    ax.tick_params(axis="y", labelsize=11)
-    ax.set_ylabel("미확인율 %", fontsize=12)
-    ax.set_title("일별 미확인율 추이", fontsize=14, pad=12)
-    ax.legend(fontsize=12)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
-def build_processing_count_trend(daily: list):
-    """확인 완료 vs 미확인 건수 두 선."""
-    fig, ax = plt.subplots(figsize=(20, 4))
-    active = [d for d in daily if d["total"] > 0]
-    if not active:
-        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
-                transform=ax.transAxes, fontsize=14, color="gray")
-        ax.axis("off")
-        return fig
-
-    labels = [f"{d['date'][5:]}({d['label']})" for d in daily]
-    proc_v = [d["processed"]   for d in daily]
-    unpr_v = [d["unprocessed"] for d in daily]
-    xs     = range(len(labels))
-
-    ax.plot(xs, proc_v, marker="o", linewidth=2.5, markersize=6,
-            color="#54A24B", label="확인 완료")
-    ax.plot(xs, unpr_v, marker="o", linewidth=2.5, markersize=6,
-            color="#E45756", label="미확인")
-    ax.fill_between(xs, proc_v, alpha=0.08, color="#54A24B")
-    ax.fill_between(xs, unpr_v, alpha=0.08, color="#E45756")
-    ax.set_xticks(list(xs))
-    ax.set_xticklabels(labels, rotation=45, fontsize=11)
-    ax.tick_params(axis="y", labelsize=11)
-    ax.set_ylabel("건수", fontsize=12)
-    ax.set_title("일별 확인 완료 / 미확인 건수", fontsize=14, pad=12)
-    ax.legend(fontsize=12)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    fig.tight_layout()
-    return fig
-
-
 def build_precision_bar(events: list):
     """Event bazlı 정탐 vs 오탐 grouped bar chart."""
     fig, ax = plt.subplots(figsize=(14, 5))
@@ -500,6 +399,89 @@ def build_time_line(hour_total: list, title: str = "시간별 오탐 분포 (0~2
     ax.legend(fontsize=11)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def _operator_no_data(w=20, h=6):
+    fig, ax = plt.subplots(figsize=(w, h))
+    ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+            transform=ax.transAxes, fontsize=14, color="gray")
+    ax.axis("off")
+    return fig
+
+
+def build_operator_chart_trend(data: dict):
+    """위: 일별 추이 (최근 14일), 아래: 이벤트별 합산 수평 바 (최근 30일)."""
+    import numpy as np
+    import matplotlib.patches as mpatches
+
+    days_30    = data.get("days", [])
+    all_events = data.get("all_events", [])
+
+    if not days_30 or not all_events:
+        return _operator_no_data()
+
+    COLORS = ["#4C78A8","#F58518","#E45756","#72B7B2",
+              "#54A24B","#EECA3B","#B279A2","#FF9DA6","#9D755D","#BAB0AC"]
+
+    # 위 차트: 마지막 14일만
+    days_14 = days_30[-14:]
+    labels  = [f"{d['date'][5:]}({d['label']})" for d in days_14]
+    x       = np.arange(len(days_14))
+
+    jeong_total = np.array([sum(d["events"].get(et, {}).get("jeongdam", 0) for et in all_events) for d in days_14])
+    odam_total  = np.array([sum(d["events"].get(et, {}).get("odam",     0) for et in all_events) for d in days_14])
+
+    # 아래 차트: 동일 14일 합산
+    ev_jeong = {et: sum(d["events"].get(et, {}).get("jeongdam", 0) for d in days_14) for et in all_events}
+    ev_odam  = {et: sum(d["events"].get(et, {}).get("odam",     0) for d in days_14) for et in all_events}
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(20, 9),
+        gridspec_kw={"height_ratios": [2, 1], "hspace": 0.38},
+    )
+
+    # ── 위: 선 그래프 (14일) ───────────────────────────────
+    ax1.plot(x, jeong_total, marker="o", markersize=5, linewidth=2,
+             color="#4C78A8", label="정탐")
+    ax1.plot(x, odam_total,  marker="s", markersize=5, linewidth=2,
+             color="#E45756", label="오탐", linestyle="--")
+    ax1.fill_between(x, jeong_total, alpha=0.12, color="#4C78A8")
+    ax1.fill_between(x, odam_total,  alpha=0.12, color="#E45756")
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels, fontsize=9, rotation=35, ha="right")
+    ax1.set_ylabel("건수", fontsize=11)
+    ax1.set_title("일별 정탐 / 오탐 추이  (최근 14일)", fontsize=13, pad=8, loc="left")
+    ax1.legend(fontsize=11, loc="upper right")
+    ax1.spines["top"].set_visible(False)
+    ax1.spines["right"].set_visible(False)
+
+    # ── 아래: 수평 누적 바 (30일 합산) ────────────────────
+    y_pos = np.array([0, 1])
+    left_j = left_o = 0.0
+    for i, et in enumerate(all_events):
+        vj = ev_jeong[et]
+        vo = ev_odam[et]
+        c  = COLORS[i % len(COLORS)]
+        ax2.barh(y_pos, [vj, vo], left=[left_j, left_o],
+                 color=c, edgecolor="white", linewidth=0.5, height=0.5, label=et)
+        left_j += vj
+        left_o += vo
+
+    ax2.set_yticks(y_pos)
+    ax2.set_yticklabels(["정탐 합계", "오탐 합계"], fontsize=11)
+    ax2.set_xlabel("건수", fontsize=11)
+    ax2.set_title("이벤트별 합산  (최근 14일)", fontsize=12, pad=8, loc="left")
+    ax2.spines["top"].set_visible(False)
+    ax2.spines["right"].set_visible(False)
+
+    patches = [mpatches.Patch(facecolor=COLORS[i % len(COLORS)], label=et, edgecolor="white")
+               for i, et in enumerate(all_events)]
+    ax2.legend(handles=patches, fontsize=10, loc="lower right",
+               bbox_to_anchor=(1.0, -0.45), ncol=len(all_events), framealpha=0.9)
+
     fig.tight_layout()
     return fig
 

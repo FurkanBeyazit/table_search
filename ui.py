@@ -3,20 +3,21 @@ from datetime import datetime, timedelta
 from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL
 
 from ui_charts import (build_histogram, build_line_chart, build_server_line,
-    build_server_histogram, build_processing_bar, build_processing_trend,
-    build_processing_count_trend, build_precision_bar, build_precision_trend,
+    build_server_histogram, build_precision_bar, build_precision_trend,
     build_precision_count_trend, build_false_cause_event_chart, build_time_heatmap,
-    build_time_slot_bar, build_time_line, build_period_chart)
+    build_time_slot_bar, build_time_line, build_period_chart,
+    build_operator_chart_trend)
 from ui_render import (render_today_events, render_summary_counts, render_detail_table,
-    render_nodes_table, render_server_stats, render_processing_cards,
-    render_processing_event_table, render_processing_node_table, render_precision_cards,
+    render_nodes_table, render_server_stats, render_precision_cards,
     render_precision_event_table, render_precision_node_table, render_stats, render_list,
     render_node_stats, render_false_cause_completion, render_false_cause_event_table,
-    render_false_cause_user_table, render_time_dist_cards, render_period_list)
+    render_false_cause_user_table, render_time_dist_cards, render_period_list,
+    render_operator_table)
 from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_names,
     do_load_nodes_by_viewer, do_import_excel, do_add_node, do_load_server_stats,
-    do_load_processing, do_load_precision, do_search, do_load_false_cause,
-    do_load_time_dist_all, do_load_time_dist, do_period_query)
+    do_load_precision, do_search, do_load_false_cause,
+    do_load_time_dist_all, do_load_time_dist, do_period_query,
+    do_load_operator_init, do_load_operator_chart)
 
 _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -207,36 +208,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
             with gr.Tabs():
 
                 # ── 처리 현황 ─────────────────────────────────────────────
-                with gr.Tab("🔲 처리 현황"):
-                    with gr.Row():
-                        processing_period = gr.Radio(
-                            choices=["오늘", "7일", "14일", "21일", "전체"],
-                            value="전체",
-                            label="기간",
-                            interactive=True,
-                        )
-                        btn_processing = gr.Button("🔄 조회", variant="primary", scale=1)
-
-                    processing_cards_out = gr.HTML("")
-
-                    gr.Markdown("#### 이벤트별 처리 현황")
-                    processing_bar_out = gr.Plot(container=False)
-
-                    with gr.Row():
-                        with gr.Column():
-                            gr.Markdown("##### 이벤트별 상세")
-                            processing_event_out = gr.HTML("")
-                        with gr.Column():
-                            gr.Markdown("##### 카메라별 미확인 순위")
-                            processing_node_out = gr.HTML("")
-
-                    gr.Markdown("#### 일별 미확인율 추이")
-                    processing_trend_out = gr.Plot(container=False)
-                    gr.Markdown("#### 일별 확인 완료 / 미확인 건수")
-                    processing_count_trend_out = gr.Plot(container=False)
-
-                # ── 정탐 / 오탐 ──────────────────────────────────────────
-                with gr.Tab("✅ 정탐 / 오탐"):
+                with gr.Tab("✅ 처리 현황"):
                     with gr.Row():
                         precision_period = gr.Radio(
                             choices=["오늘", "7일", "14일", "21일", "전체"],
@@ -339,6 +311,23 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                         with gr.Column():
                             gr.Markdown("##### 사용자 × 원인 상세")
                             false_cause_user_out = gr.HTML("")
+
+                # ── 운영자 분석 ───────────────────────────────────────────
+                with gr.Tab("👤 운영자 분석"):
+                    with gr.Row():
+                        operator_select = gr.Dropdown(
+                            choices=[],
+                            label="운영자 선택",
+                            interactive=True,
+                            scale=4,
+                        )
+                        btn_operator = gr.Button("🔄 조회", variant="primary", scale=1)
+
+                    with gr.Row():
+                        operator_chart_out = gr.Plot(container=False)
+
+                    gr.Markdown("#### 운영자별 전체 통계")
+                    operator_table_out = gr.HTML("")
 
         # ── Tab 6: 설정 ──────────────────────────────────────────────────────
         with gr.Tab("⚙️ 설정", id=6):
@@ -454,14 +443,6 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
     btn_load_srv.click(do_load_server_stats, outputs=[srv_stats_out, srv_line_out, srv_hist_out])
 
-    _processing_outs = [
-        processing_cards_out, processing_bar_out,
-        processing_event_out, processing_node_out,
-        processing_trend_out, processing_count_trend_out,
-    ]
-    btn_processing.click(do_load_processing, inputs=[processing_period], outputs=_processing_outs)
-    processing_period.change(do_load_processing, inputs=[processing_period], outputs=_processing_outs)
-
     _precision_outs = [
         precision_cards_out, precision_bar_out,
         precision_event_out, precision_node_out,
@@ -491,6 +472,9 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     btn_false_cause.click(do_load_false_cause, inputs=[false_cause_period], outputs=_false_cause_outs)
     false_cause_period.change(do_load_false_cause, inputs=[false_cause_period], outputs=_false_cause_outs)
 
+    btn_operator.click(do_load_operator_chart, inputs=[operator_select], outputs=[operator_chart_out])
+    operator_select.change(do_load_operator_chart, inputs=[operator_select], outputs=[operator_chart_out])
+
     btn_pq.click(
         do_period_query,
         inputs=[pq_ref_date, pq_time_from, pq_time_to, pq_event],
@@ -507,6 +491,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
     app.load(load_today_tab,   outputs=_today_outs)
     app.load(load_summary_tab, outputs=_summary_outs)
+    app.load(do_load_operator_init, outputs=[operator_select, operator_chart_out, operator_table_out])
 
 
 if __name__ == "__main__":

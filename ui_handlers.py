@@ -3,16 +3,16 @@ import requests
 import gradio as gr
 from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL
 from ui_charts import (build_histogram, build_line_chart, build_server_line,
-    build_server_histogram, build_processing_bar, build_processing_trend,
-    build_processing_count_trend, build_precision_bar, build_precision_trend,
+    build_server_histogram, build_precision_bar, build_precision_trend,
     build_precision_count_trend, build_false_cause_event_chart, build_time_heatmap,
-    build_time_slot_bar, build_time_line, build_period_chart)
+    build_time_slot_bar, build_time_line, build_period_chart,
+    build_operator_chart_trend)
 from ui_render import (render_today_events, render_summary_counts, render_detail_table,
-    render_nodes_table, render_server_stats, render_processing_cards,
-    render_processing_event_table, render_processing_node_table, render_precision_cards,
+    render_nodes_table, render_server_stats, render_precision_cards,
     render_precision_event_table, render_precision_node_table, render_stats, render_list,
     render_node_stats, render_false_cause_completion, render_false_cause_event_table,
-    render_false_cause_user_table, render_time_dist_cards, render_period_list)
+    render_false_cause_user_table, render_time_dist_cards, render_period_list,
+    render_operator_table)
 
 
 def api_get(path: str, params: dict = None) -> dict:
@@ -112,29 +112,6 @@ def do_add_node(viewer, node_id, mgmt, name):
 def do_load_server_stats():
     data = api_get("/api/server/stats")
     return render_server_stats(data), build_server_line(data), build_server_histogram(data)
-
-
-def do_load_processing(period: str):
-    try:
-        data      = api_get("/api/analysis/processing", {"period": period})
-        empty_fig = plt.figure(figsize=(20, 4))
-        if "error" in data:
-            err = f"<p style='color:red'>⚠ {data['error']}</p>"
-            return err, empty_fig, err, err, empty_fig, empty_fig
-        daily = data.get("daily", [])
-        return (
-            render_processing_cards(data.get("summary", {})),
-            build_processing_bar(data.get("events", [])),
-            render_processing_event_table(data.get("events", [])),
-            render_processing_node_table(data.get("nodes", [])),
-            build_processing_trend(daily),
-            build_processing_count_trend(daily),
-        )
-    except Exception as e:
-        import traceback
-        err = f"<p style='color:red'>⚠ Python hatası: <pre>{traceback.format_exc()}</pre></p>"
-        empty_fig = plt.figure(figsize=(20, 4))
-        return err, empty_fig, err, err, empty_fig, empty_fig
 
 
 def do_load_precision(period: str):
@@ -245,3 +222,30 @@ def do_period_query(ref_date: str, time_from: str, time_to: str, event: str):
         err = f"<p style='color:red'>⚠ {data['error']}</p>"
         return empty_fig, err
     return build_period_chart(data), render_period_list(data)
+
+
+def do_load_operator_init():
+    """앱 시작 시 dropdown + chart + 30일 통계 테이블을 한 번에 로드."""
+    import gradio as gr
+    empty_fig = plt.figure(figsize=(20, 9))
+    data = api_get("/api/analysis/operator_summary")
+    if "error" in data:
+        err = f"<p style='color:red'>⚠ {data['error']}</p>"
+        return gr.update(choices=[]), empty_fig, err
+    operators = [op["reg_id"] for op in data.get("operators", [])]
+    first     = operators[0] if operators else None
+    chart_fig = do_load_operator_chart(first) if first else empty_fig
+    return gr.update(choices=operators, value=first), chart_fig, render_operator_table(data)
+
+
+def do_load_operator_chart(reg_id: str):
+    empty_fig = plt.figure(figsize=(20, 9))
+    if not reg_id:
+        return empty_fig
+    try:
+        data = api_get("/api/analysis/operator_chart", {"reg_id": reg_id})
+        if "error" in data:
+            return empty_fig
+        return build_operator_chart_trend(data)
+    except Exception:
+        return empty_fig
