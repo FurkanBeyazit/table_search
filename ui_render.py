@@ -502,7 +502,47 @@ def render_time_dist_cards(cards: dict, total_label: str = "오탐 총계") -> s
     )
 
 
-def render_operator_table(data: dict) -> str:
+def render_operator_30day_table(data: dict) -> str:
+    days = data.get("days", [])
+    if not days:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%'>"
+    html += (
+        f"<tr>"
+        f"<th {TH}>날짜</th>"
+        f"<th {TH_C}>요일</th>"
+        f"<th {TH_C}>총계</th>"
+        f"<th {TH_C} style='color:#4C78A8'>정탐</th>"
+        f"<th {TH_C} style='color:#E45756'>오탐</th>"
+        f"<th {TH_C}>원인 미입력</th>"
+        f"</tr>"
+    )
+
+    for day in days:
+        evs = day.get("events", {})
+        j   = sum(v.get("jeongdam", 0) for v in evs.values())
+        o   = sum(v.get("odam",     0) for v in evs.values())
+        t   = j + o
+        mii = day.get("miipryeok", 0)
+        fade = " style='opacity:0.35'" if t == 0 else ""
+        html += (
+            f"<tr{fade}>"
+            f"<td {TD}>{day['date']}</td>"
+            f"<td {TD_C}>{day['label']}</td>"
+            f"<td {TD_C}><b>{t}</b></td>"
+            f"<td {TD_C} style='color:#4C78A8'>{j}</td>"
+            f"<td {TD_C} style='color:#E45756'>{o}</td>"
+            f"<td {TD_C}>{mii}</td>"
+            f"</tr>"
+        )
+
+    html += "</table></div>"
+    return html
+
+
+def render_operator_table(data: dict, highlight_reg_id: str = None) -> str:
     operators    = data.get("operators", [])
     avg_odam     = data.get("avg_odam_rate", 0.0)
     avg_per      = data.get("avg_per_person", 0.0)
@@ -557,15 +597,18 @@ def render_operator_table(data: dict) -> str:
 
         # color based on odam_rate vs average
         if rate > avg_odam:
-            row_color = "rgba(228,87,86,0.07)"
+            row_color   = "rgba(228,87,86,0.07)"
             badge_color = "#E45756"
             arrow = f"▲ +{diff}%"
         else:
-            row_color = "rgba(76,120,168,0.07)"
+            row_color   = "rgba(76,120,168,0.07)"
             badge_color = "#4C78A8"
             arrow = f"▼ {diff}%"
 
-        row_style = f"style='background:{row_color}'"
+        if highlight_reg_id and op["reg_id"] == highlight_reg_id:
+            row_style = f"style='background:rgba(255,193,7,0.15);border-left:3px solid #FFC107'"
+        else:
+            row_style = f"style='background:{row_color}'"
 
         html += (
             f"<tr {row_style}>"
@@ -579,6 +622,55 @@ def render_operator_table(data: dict) -> str:
             f"<td {TD_C}><span style='color:{badge_color};font-weight:600'>{arrow}</span></td>"
             f"</tr>"
         )
+
+    html += "</table></div>"
+    return html
+
+
+def render_operator_daily_table(data: dict) -> str:
+    days_30 = data.get("days", [])
+    days_14 = days_30[-14:]
+
+    if not days_14:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = "<div style='overflow-x:auto;margin-top:12px'>"
+    html += "<table style='border-collapse:collapse;width:100%'>"
+
+    # 헤더
+    html += f"<tr><th {TH} style='min-width:60px'>구분</th>"
+    for day in days_14:
+        date_label = day["date"][5:]  # MM-DD
+        kr_label   = day["label"]
+        html += (
+            f"<th {TH_C} style='min-width:54px'>"
+            f"{date_label}<br>"
+            f"<span style='font-size:0.72rem;opacity:0.55'>{kr_label}</span>"
+            f"</th>"
+        )
+    html += "</tr>"
+
+    # 정탐
+    html += f"<tr><td {TD}><b style='color:#4C78A8'>정탐</b></td>"
+    for day in days_14:
+        j = sum(v.get("jeongdam", 0) for v in day.get("events", {}).values())
+        html += f"<td {TD_C}>{j}</td>"
+    html += "</tr>"
+
+    # 오탐
+    html += f"<tr><td {TD}><b style='color:#E45756'>오탐</b></td>"
+    for day in days_14:
+        o = sum(v.get("odam", 0) for v in day.get("events", {}).values())
+        html += f"<td {TD_C}>{o}</td>"
+    html += "</tr>"
+
+    # 합계
+    html += f"<tr style='background:rgba(128,128,128,0.06)'><td {TD}><b>합계</b></td>"
+    for day in days_14:
+        evs   = day.get("events", {})
+        total = sum(v.get("jeongdam", 0) + v.get("odam", 0) for v in evs.values())
+        html += f"<td {TD_C}><b>{total}</b></td>"
+    html += "</tr>"
 
     html += "</table></div>"
     return html

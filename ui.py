@@ -17,7 +17,8 @@ from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_n
     do_load_nodes_by_viewer, do_import_excel, do_add_node, do_load_server_stats,
     do_load_precision, do_search, do_load_false_cause,
     do_load_time_dist_all, do_load_time_dist, do_period_query,
-    do_load_operator_init, do_load_operator_chart)
+    do_load_operator_init, do_load_operator_chart, do_load_operator_detail,
+    do_export_bhvr, do_export_dst, do_export_list)
 
 _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -143,12 +144,20 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                 with gr.Tab("🚶 행동 분석 (bhvr)"):
                     bhvr_sum_out    = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
                     bhvr_line_out   = gr.Plot(container=False)
-                    bhvr_detail_out = gr.HTML()
+                    with gr.Row(equal_height=True):
+                        gr.Markdown("#### 30일 상세")
+                        btn_export_bhvr  = gr.Button("📥 Excel", size="sm", scale=0, min_width=90)
+                    bhvr_export_file = gr.File(label="", visible=False, interactive=False)
+                    bhvr_detail_out  = gr.HTML()
 
                 with gr.Tab("🌊 재난 분석 (dst)"):
                     dst_sum_out    = gr.HTML("<p style='opacity:0.5'>불러오는 중...</p>")
                     dst_line_out   = gr.Plot(container=False)
-                    dst_detail_out = gr.HTML()
+                    with gr.Row(equal_height=True):
+                        gr.Markdown("#### 30일 상세")
+                        btn_export_dst  = gr.Button("📥 Excel", size="sm", scale=0, min_width=90)
+                    dst_export_file = gr.File(label="", visible=False, interactive=False)
+                    dst_detail_out  = gr.HTML()
 
         # ── Tab 3: 서버 통계 ──────────────────────────────────────────────────
         with gr.Tab("🖥 서버 통계", id=3):
@@ -197,6 +206,10 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                 with gr.Tab("📊 Stats / 통계"):
                     stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
                 with gr.Tab("📋 List / 목록"):
+                    with gr.Row(equal_height=True):
+                        gr.Markdown("#### 목록")
+                        btn_export_list  = gr.Button("📥 Excel", size="sm", scale=0, min_width=90)
+                    list_export_file = gr.File(label="", visible=False, interactive=False)
                     list_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
                 with gr.Tab("🖥 Node Stats / 노드 통계"):
                     node_stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
@@ -314,20 +327,31 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
                 # ── 운영자 분석 ───────────────────────────────────────────
                 with gr.Tab("👤 운영자 분석"):
-                    with gr.Row():
-                        operator_select = gr.Dropdown(
-                            choices=[],
-                            label="운영자 선택",
-                            interactive=True,
-                            scale=4,
-                        )
-                        btn_operator = gr.Button("🔄 조회", variant="primary", scale=1)
+                    with gr.Tabs():
 
-                    with gr.Row():
-                        operator_chart_out = gr.Plot(container=False)
+                        with gr.Tab("📈 운영자 분석"):
+                            with gr.Row():
+                                operator_select = gr.Dropdown(
+                                    choices=[],
+                                    label="운영자 선택",
+                                    interactive=True,
+                                    scale=4,
+                                )
+                                btn_operator = gr.Button("🔄 조회", variant="primary", scale=1)
+                            operator_chart_out = gr.Plot(container=False)
+                            gr.Markdown("#### 일별 정탐 / 오탐 (최근 14일)")
+                            operator_daily_table_out = gr.HTML("")
 
-                    gr.Markdown("#### 운영자별 전체 통계")
-                    operator_table_out = gr.HTML("")
+                        with gr.Tab("📋 운영자 상세 분석"):
+                            with gr.Row():
+                                operator_detail_select = gr.Dropdown(
+                                    choices=["전체 보기"],
+                                    label="운영자 선택",
+                                    interactive=True,
+                                    scale=4,
+                                )
+                                btn_operator_detail = gr.Button("🔄 조회", variant="primary", scale=1)
+                            operator_table_out = gr.HTML("")
 
         # ── Tab 6: 설정 ──────────────────────────────────────────────────────
         with gr.Tab("⚙️ 설정", id=6):
@@ -416,6 +440,14 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     _summary_outs = [bhvr_sum_out, bhvr_line_out, bhvr_detail_out,
                      dst_sum_out,  dst_line_out,  dst_detail_out]
 
+    btn_export_bhvr.click(do_export_bhvr, outputs=[bhvr_export_file])
+    btn_export_dst.click(do_export_dst,   outputs=[dst_export_file])
+    btn_export_list.click(
+        do_export_list,
+        inputs=[start_input, end_input, events_check, node_id_input],
+        outputs=[list_export_file],
+    )
+
     btn_refresh_today.click(load_today_tab,   outputs=_today_outs)
     btn_refresh_summary.click(load_summary_tab, outputs=_summary_outs)
 
@@ -472,8 +504,12 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     btn_false_cause.click(do_load_false_cause, inputs=[false_cause_period], outputs=_false_cause_outs)
     false_cause_period.change(do_load_false_cause, inputs=[false_cause_period], outputs=_false_cause_outs)
 
-    btn_operator.click(do_load_operator_chart, inputs=[operator_select], outputs=[operator_chart_out])
-    operator_select.change(do_load_operator_chart, inputs=[operator_select], outputs=[operator_chart_out])
+    _operator_chart_outs = [operator_chart_out, operator_daily_table_out]
+    btn_operator.click(do_load_operator_chart, inputs=[operator_select], outputs=_operator_chart_outs)
+    operator_select.change(do_load_operator_chart, inputs=[operator_select], outputs=_operator_chart_outs)
+
+    btn_operator_detail.click(do_load_operator_detail, inputs=[operator_detail_select], outputs=[operator_table_out])
+    operator_detail_select.change(do_load_operator_detail, inputs=[operator_detail_select], outputs=[operator_table_out])
 
     btn_pq.click(
         do_period_query,
@@ -491,7 +527,10 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
     app.load(load_today_tab,   outputs=_today_outs)
     app.load(load_summary_tab, outputs=_summary_outs)
-    app.load(do_load_operator_init, outputs=[operator_select, operator_chart_out, operator_table_out])
+    app.load(do_load_operator_init, outputs=[
+        operator_select, operator_chart_out, operator_daily_table_out,
+        operator_detail_select, operator_table_out,
+    ])
 
 
 if __name__ == "__main__":

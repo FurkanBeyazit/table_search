@@ -12,7 +12,7 @@ from ui_render import (render_today_events, render_summary_counts, render_detail
     render_precision_event_table, render_precision_node_table, render_stats, render_list,
     render_node_stats, render_false_cause_completion, render_false_cause_event_table,
     render_false_cause_user_table, render_time_dist_cards, render_period_list,
-    render_operator_table)
+    render_operator_table, render_operator_daily_table, render_operator_30day_table)
 
 
 def api_get(path: str, params: dict = None) -> dict:
@@ -224,28 +224,136 @@ def do_period_query(ref_date: str, time_from: str, time_to: str, event: str):
     return build_period_chart(data), render_period_list(data)
 
 
+def do_export_list(start_dt: str, end_dt: str, selected_events: list, node_id_input: str):
+    """조희 List 탭 결과를 xlsx로 내보냄. 이미지 URL은 하이퍼링크로."""
+    import openpyxl, tempfile
+    from openpyxl.styles import Font
+
+    node_ids = [n.strip() for n in node_id_input.split(",") if n.strip()] if node_id_input else []
+    params   = {"start_dt": start_dt, "end_dt": end_dt, "events": selected_events}
+    if node_ids:
+        params["node_id"] = node_ids
+
+    data    = api_get("/api/search/list", params)
+    records = data.get("records", [])
+    if not records:
+        return gr.update()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "조희결과"
+    ws.append(["Node ID", "Name", "Ch", "Detect Time", "Event", "이미지"])
+
+    for rec in records:
+        row_idx = ws.max_row + 1
+        ws.append([
+            rec.get("node_id", ""),
+            rec.get("node_name", ""),
+            rec.get("ch", ""),
+            rec.get("dtct_dt", ""),
+            rec.get("event", ""),
+            "",
+        ])
+        img_url = rec.get("img_url", "")
+        if img_url:
+            cell = ws.cell(row=row_idx, column=6, value="이미지 보기")
+            cell.hyperlink = img_url
+            cell.font = Font(color="0563C1", underline="single")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, prefix="list_export_")
+    wb.save(tmp.name)
+    tmp.close()
+    return gr.update(visible=True, value=tmp.name)
+
+
+def _export_summary_excel(table_type: str):
+    """bhvr veya dst detail tablosunu xlsx olarak oluşturur."""
+    import openpyxl, tempfile
+    data = api_get("/api/stats/summary")
+    if "error" in data:
+        return gr.update()
+    detail      = data.get(table_type, {}).get("detail", [])
+    events_list = BHVR_EVENTS if table_type == "bhvr" else DST_EVENTS
+    if not detail:
+        return gr.update()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "30일 상세"
+    ws.append(["날짜", "합계"] + events_list)
+    for row in detail:
+        ws.append(
+            [f"{row['date'][5:]}({row['label']})", row.get("total", 0)]
+            + [row.get(ev, 0) for ev in events_list]
+        )
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, prefix=f"{table_type}_export_")
+    wb.save(tmp.name)
+    tmp.close()
+    return gr.update(visible=True, value=tmp.name)
+
+
+def do_export_bhvr():
+    return _export_summary_excel("bhvr")
+
+
+def do_export_dst():
+    return _export_summary_excel("dst")
+
+
 def do_load_operator_init():
-    """앱 시작 시 dropdown + chart + 30일 통계 테이블을 한 번에 로드."""
-    import gradio as gr
-    empty_fig = plt.figure(figsize=(20, 9))
+    """앱 시작 시 두 탭 모두 초기화: dropdown1 + chart + daily_table + dropdown2 + detail_table."""
+    empty_fig  = plt.figure(figsize=(20, 9))
+    empty_html = "<p style='opacity:0.5'>운영자를 선택하세요</p>"
     data = api_get("/api/analysis/operator_summary")
     if "error" in data:
         err = f"<p style='color:red'>⚠ {data['error']}</p>"
-        return gr.update(choices=[]), empty_fig, err
-    operators = [op["reg_id"] for op in data.get("operators", [])]
-    first     = operators[0] if operators else None
-    chart_fig = do_load_operator_chart(first) if first else empty_fig
-    return gr.update(choices=operators, value=first), chart_fig, render_operator_table(data)
+        return (
+            gr.update(choices=[]),
+            empty_fig, empty_html,
+            gr.update(choices=["전체 보기"]),
+            err,
+        )
+    operators      = [op["reg_id"] for op in data.get("operators", [])]
+    first          = operators[0] if operators else None
+    chart_fig, daily_table = do_load_operator_chart(first) if first else (empty_fig, empty_html)
+    detail_choices = ["전체 보기"] + operators
+    return (
+        gr.update(choices=operators, value=first),
+        chart_fig,
+        daily_table,
+        gr.update(choices=detail_choices, value="전체 보기"),
+        do_load_operator_detail("전체 보기"),
+    )
 
 
 def do_load_operator_chart(reg_id: str):
-    empty_fig = plt.figure(figsize=(20, 9))
+    """14일 그래프 + 일별 정탐/오탐 테이블 반환."""
+    empty_fig  = plt.figure(figsize=(20, 9))
+    empty_html = "<p style='opacity:0.5'>운영자를 선택하세요</p>"
     if not reg_id:
-        return empty_fig
+        return empty_fig, empty_html
     try:
         data = api_get("/api/analysis/operator_chart", {"reg_id": reg_id})
         if "error" in data:
-            return empty_fig
-        return build_operator_chart_trend(data)
+            return empty_fig, empty_html
+        return build_operator_chart_trend(data), render_operator_daily_table(data)
     except Exception:
-        return empty_fig
+        return empty_fig, empty_html
+
+
+def do_load_operator_detail(reg_id: str):
+    """비교 테이블 항상 표시. 특정 운영자 선택 시 highlight + 30일 일별 테이블 추가."""
+    summary_data = api_get("/api/analysis/operator_summary")
+    if "error" in summary_data:
+        return f"<p style='color:red'>⚠ {summary_data['error']}</p>"
+
+    highlight = reg_id if reg_id and reg_id != "전체 보기" else None
+    html = render_operator_table(summary_data, highlight_reg_id=highlight)
+
+    if highlight:
+        chart_data = api_get("/api/analysis/operator_chart", {"reg_id": reg_id})
+        if "error" not in chart_data:
+            html += "<h4 style='margin:20px 0 8px'>📅 30일 일별 현황</h4>"
+            html += render_operator_30day_table(chart_data)
+
+    return html

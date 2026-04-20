@@ -25,7 +25,7 @@ def _start(period: str):
 
 @router.get("/precision")
 def get_precision(period: str = Query(default="전체")):
-    """정탐 / 오탐 분석: summary + event bazlı + node bazlı + günlük trend."""
+    """정탐 / 오탐 분석: summary + event bazlı + node bazlı + günlük trend. 오늘/7일/14일/21일/전체 선택 가능"""
     start = _start(period)
     today = date.today()
 
@@ -579,15 +579,31 @@ def get_operator_chart(reg_id: str = Query(...)):
         day_map[ds][et]["jeongdam"] += int(r["jeongdam"] or 0)
         day_map[ds][et]["odam"]     += int(r["odam"]     or 0)
 
-    # build ordered day list (only days with data, skip NULL dates)
-    from datetime import date as _date
+    # 원인 미입력 per day (오탐인데 fls_pst_knd 없는 건수)
+    mii_rows = database.run_query(
+        f"SELECT DATE(reg_dt) AS day, COUNT(*) AS cnt "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE prcs_yn IS NOT NULL AND evnt_knd IN (%s, %s) "
+        f"AND COALESCE(reg_id, '미확인') = %s "
+        f"AND fls_pst_yn = '0' "
+        f"AND (fls_pst_knd IS NULL OR fls_pst_knd = '') "
+        f"AND DATE(reg_dt) >= %s "
+        f"GROUP BY DATE(reg_dt)",
+        [BHVR_EVNT_KND, DST_EVNT_KND, reg_id, today - timedelta(days=29)],
+    )
+    mii_map = {str(r["day"]): int(r["cnt"]) for r in mii_rows if r["day"]}
+
+    # 전체 30일 채우기 (데이터 없는 날은 0)
+    start_date = today - timedelta(days=29)
     days = []
-    for ds in sorted(k for k in day_map.keys() if k and k != "None"):
-        d = _date.fromisoformat(ds)
+    for i in range(30):
+        d  = start_date + timedelta(days=i)
+        ds = str(d)
         days.append({
-            "date":   ds,
-            "label":  KR_DAYS[d.weekday()],
-            "events": day_map[ds],
+            "date":      ds,
+            "label":     KR_DAYS[d.weekday()],
+            "events":    day_map.get(ds, {}),
+            "miipryeok": mii_map.get(ds, 0),
         })
 
     # summary for the operator (전체 기간)
