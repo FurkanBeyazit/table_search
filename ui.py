@@ -340,7 +340,8 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                                 btn_operator = gr.Button("🔄 조회", variant="primary", scale=1)
                             operator_chart_out = gr.Plot(container=False)
                             gr.Markdown("#### 일별 정탐 / 오탐 (최근 14일)")
-                            operator_daily_table_out = gr.HTML("")
+                            operator_daily_table_out   = gr.HTML("")
+                            operator_monthly_table_out = gr.HTML("")
 
                         with gr.Tab("📋 운영자 상세 분석"):
                             with gr.Row():
@@ -504,7 +505,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     btn_false_cause.click(do_load_false_cause, inputs=[false_cause_period], outputs=_false_cause_outs)
     false_cause_period.change(do_load_false_cause, inputs=[false_cause_period], outputs=_false_cause_outs)
 
-    _operator_chart_outs = [operator_chart_out, operator_daily_table_out]
+    _operator_chart_outs = [operator_chart_out, operator_daily_table_out, operator_monthly_table_out]
     btn_operator.click(do_load_operator_chart, inputs=[operator_select], outputs=_operator_chart_outs)
     operator_select.change(do_load_operator_chart, inputs=[operator_select], outputs=_operator_chart_outs)
 
@@ -528,7 +529,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     app.load(load_today_tab,   outputs=_today_outs)
     app.load(load_summary_tab, outputs=_summary_outs)
     app.load(do_load_operator_init, outputs=[
-        operator_select, operator_chart_out, operator_daily_table_out,
+        operator_select, operator_chart_out, operator_daily_table_out, operator_monthly_table_out,
         operator_detail_select, operator_table_out,
     ])
 

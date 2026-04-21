@@ -606,6 +606,30 @@ def get_operator_chart(reg_id: str = Query(...)):
             "miipryeok": mii_map.get(ds, 0),
         })
 
+    # 월별 현황 (올해)
+    current_year  = today.year
+    monthly_rows  = database.run_query(
+        f"SELECT EXTRACT(MONTH FROM reg_dt)::int AS month, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn != '0') AS jeongdam, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn  = '0') AS odam, "
+        f"  COUNT(*) AS total "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE prcs_yn IS NOT NULL AND evnt_knd IN (%s, %s) "
+        f"AND COALESCE(reg_id, '미확인') = %s "
+        f"AND EXTRACT(YEAR FROM reg_dt) = %s "
+        f"GROUP BY EXTRACT(MONTH FROM reg_dt)::int "
+        f"ORDER BY EXTRACT(MONTH FROM reg_dt)::int",
+        [BHVR_EVNT_KND, DST_EVNT_KND, reg_id, current_year],
+    )
+    month_map = {int(r["month"]): r for r in monthly_rows if r["month"]}
+    monthly   = []
+    for m in range(1, 13):
+        r     = month_map.get(m, {})
+        total = int(r.get("total",    0) or 0)
+        j     = int(r.get("jeongdam", 0) or 0)
+        o     = int(r.get("odam",     0) or 0)
+        monthly.append({"month": m, "total": total, "jeongdam": j, "odam": o})
+
     # summary for the operator (전체 기간)
     summary_rows = database.run_query(
         f"SELECT "
@@ -622,9 +646,11 @@ def get_operator_chart(reg_id: str = Query(...)):
     odam  = int(s.get("odam",  0) or 0)
 
     return {
-        "reg_id":    reg_id,
-        "days":      days,
+        "reg_id":     reg_id,
+        "days":       days,
         "all_events": sorted(all_events),
+        "monthly":    monthly,
+        "year":       current_year,
         "summary": {
             "total":     total,
             "jeongdam":  int(s.get("jeongdam", 0) or 0),

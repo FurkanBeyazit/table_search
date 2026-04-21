@@ -12,7 +12,8 @@ from ui_render import (render_today_events, render_summary_counts, render_detail
     render_precision_event_table, render_precision_node_table, render_stats, render_list,
     render_node_stats, render_false_cause_completion, render_false_cause_event_table,
     render_false_cause_user_table, render_time_dist_cards, render_period_list,
-    render_operator_table, render_operator_daily_table, render_operator_30day_table)
+    render_operator_table, render_operator_daily_table, render_operator_30day_table,
+    render_operator_monthly_table)
 
 
 def api_get(path: str, params: dict = None) -> dict:
@@ -315,30 +316,37 @@ def do_load_operator_init():
         )
     operators      = [op["reg_id"] for op in data.get("operators", [])]
     first          = operators[0] if operators else None
-    chart_fig, daily_table = do_load_operator_chart(first) if first else (empty_fig, empty_html)
+    chart_fig, daily_table, monthly_table = (
+        do_load_operator_chart(first) if first else (empty_fig, empty_html, empty_html)
+    )
     detail_choices = ["전체 보기"] + operators
     return (
         gr.update(choices=operators, value=first),
         chart_fig,
         daily_table,
+        monthly_table,
         gr.update(choices=detail_choices, value="전체 보기"),
         do_load_operator_detail("전체 보기"),
     )
 
 
 def do_load_operator_chart(reg_id: str):
-    """14일 그래프 + 일별 정탐/오탐 테이블 반환."""
+    """14일 그래프 + 14일 일별 테이블 + 연간 월별 테이블 반환."""
     empty_fig  = plt.figure(figsize=(20, 9))
     empty_html = "<p style='opacity:0.5'>운영자를 선택하세요</p>"
     if not reg_id:
-        return empty_fig, empty_html
+        return empty_fig, empty_html, empty_html
     try:
         data = api_get("/api/analysis/operator_chart", {"reg_id": reg_id})
         if "error" in data:
-            return empty_fig, empty_html
-        return build_operator_chart_trend(data), render_operator_daily_table(data)
+            return empty_fig, empty_html, empty_html
+        return (
+            build_operator_chart_trend(data),
+            render_operator_daily_table(data),
+            render_operator_monthly_table(data),
+        )
     except Exception:
-        return empty_fig, empty_html
+        return empty_fig, empty_html, empty_html
 
 
 def do_load_operator_detail(reg_id: str):

@@ -502,6 +502,45 @@ def render_time_dist_cards(cards: dict, total_label: str = "오탐 총계") -> s
     )
 
 
+def render_operator_monthly_table(data: dict) -> str:
+    monthly = data.get("monthly", [])
+    year    = data.get("year", "")
+    if not monthly:
+        return "<p style='opacity:0.5'>데이터 없음</p>"
+
+    html  = f"<h4 style='margin:20px 0 8px'>📅 {year}년 월별 현황</h4>"
+    html += "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%'>"
+    html += (
+        f"<tr>"
+        f"<th {TH}>월</th>"
+        f"<th {TH_C}>합계</th>"
+        f"<th {TH_C} style='color:#4C78A8'>정탐</th>"
+        f"<th {TH_C} style='color:#E45756'>오탐</th>"
+        f"<th {TH_C}>오탐률</th>"
+        f"</tr>"
+    )
+
+    for m in monthly:
+        total = m.get("total", 0)
+        j     = m.get("jeongdam", 0)
+        o     = m.get("odam", 0)
+        rate  = round(o / total * 100, 1) if total > 0 else 0.0
+        fade  = " style='opacity:0.35'" if total == 0 else ""
+        html += (
+            f"<tr{fade}>"
+            f"<td {TD}><b>{m['month']}월</b></td>"
+            f"<td {TD_C}><b>{total}</b></td>"
+            f"<td {TD_C} style='color:#4C78A8'>{j}</td>"
+            f"<td {TD_C} style='color:#E45756'>{o}</td>"
+            f"<td {TD_C}>{rate}%</td>"
+            f"</tr>"
+        )
+
+    html += "</table></div>"
+    return html
+
+
 def render_operator_30day_table(data: dict) -> str:
     days = data.get("days", [])
     if not days:
