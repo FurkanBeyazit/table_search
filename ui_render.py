@@ -504,11 +504,13 @@ def render_time_dist_cards(cards: dict, total_label: str = "오탐 총계") -> s
 
 def render_operator_monthly_table(data: dict) -> str:
     monthly = data.get("monthly", [])
-    year    = data.get("year", "")
     if not monthly:
         return "<p style='opacity:0.5'>데이터 없음</p>"
 
-    html  = f"<h4 style='margin:20px 0 8px'>📅 {year}년 월별 현황</h4>"
+    start = monthly[0]
+    end   = monthly[-1]
+    title = f"📅 최근 12개월 ({start['year']}.{start['month']}월 ~ {end['year']}.{end['month']}월)"
+    html  = f"<h4 style='margin:20px 0 8px'>{title}</h4>"
     html += "<div style='overflow-x:auto'>"
     html += "<table style='border-collapse:collapse;width:100%'>"
     html += (
@@ -521,7 +523,18 @@ def render_operator_monthly_table(data: dict) -> str:
         f"</tr>"
     )
 
-    for m in monthly:
+    prev_year = None
+    for m in reversed(monthly):
+        # 연도가 바뀌는 시점에 구분선
+        if prev_year and m["year"] != prev_year:
+            html += (
+                f"<tr><td colspan='5' "
+                f"style='text-align:center;font-size:0.75rem;opacity:0.5;"
+                f"padding:4px;border-top:2px solid rgba(128,128,128,0.3)'>"
+                f"── {m['year']}년 ──</td></tr>"
+            )
+        prev_year = m["year"]
+
         total = m.get("total", 0)
         j     = m.get("jeongdam", 0)
         o     = m.get("odam", 0)
