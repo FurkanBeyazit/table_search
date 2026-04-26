@@ -18,7 +18,7 @@ from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_n
     do_load_precision, do_search, do_load_false_cause,
     do_load_time_dist_all, do_load_time_dist, do_period_query,
     do_load_operator_init, do_load_operator_chart, do_load_operator_detail,
-    do_export_bhvr, do_export_dst, do_export_list)
+    do_export_bhvr, do_export_dst, do_export_list, do_generate_monthly_report)
 
 _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -121,6 +121,14 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                     <span style="font-size:2.2rem">⚙️</span>
                     <span style="font-size:1rem;font-weight:600">설정</span>
                     <span style="font-size:0.75rem;opacity:0.6">Settings</span>
+                  </div>
+
+                  <div class="home-card"
+                       style="border:2px solid rgba(34,139,34,0.6);background:rgba(34,139,34,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('Report')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">📄</span>
+                    <span style="font-size:1rem;font-weight:600">Report</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Monthly Excel</span>
                   </div>
 
                 </div>
@@ -435,6 +443,38 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
             pq_chart_out = gr.Plot(container=False, label="14일 그래프")
             pq_list_out  = gr.HTML("<p style='opacity:0.5'>위 조건을 설정하고 조회 버튼을 누르세요</p>")
 
+        # ── Tab 8: Report ─────────────────────────────────────────────────────
+        with gr.Tab("📄 Report", id=8):
+            gr.Markdown("## 월간 보고서 / Monthly Report")
+            gr.Markdown(
+                "선택한 연도·월의 이벤트 데이터를 **Excel(.xlsx)** 파일로 생성합니다.\n\n"
+                "- **전체 시트**: 이벤트별 × 날짜별 정탐/오탐\n"
+                "- **카메라 시트**: 카메라별 × 날짜별 정탐/오탐\n"
+                "- **이벤트별 시트** (9개): 이벤트 × 카메라 × 날짜 정탐/오탐"
+            )
+            with gr.Row():
+                _now_y = datetime.now().year
+                _now_m = datetime.now().month
+                report_year  = gr.Number(
+                    label="연도",
+                    value=_now_y,
+                    precision=0,
+                    minimum=2020,
+                    maximum=2099,
+                    scale=1,
+                )
+                report_month = gr.Number(
+                    label="월",
+                    value=_now_m,
+                    precision=0,
+                    minimum=1,
+                    maximum=12,
+                    scale=1,
+                )
+                btn_report = gr.Button("📄 보고서 생성", variant="primary", scale=2)
+            report_status = gr.HTML("")
+            report_file   = gr.File(label="", visible=False, interactive=False)
+
     # ── 이벤트 연결 ───────────────────────────────────────────────────────────
 
     _today_outs   = [today_out, histogram_out]
@@ -524,6 +564,12 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
         do_search,
         inputs=[start_input, end_input, events_check, node_id_input],
         outputs=[stats_out, list_out, node_stats_out],
+    )
+
+    btn_report.click(
+        do_generate_monthly_report,
+        inputs=[report_year, report_month],
+        outputs=[report_file, report_status],
     )
 
     app.load(load_today_tab,   outputs=_today_outs)

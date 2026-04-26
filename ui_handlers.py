@@ -365,3 +365,268 @@ def do_load_operator_detail(reg_id: str):
             html += render_operator_30day_table(chart_data)
 
     return html
+
+
+def do_generate_monthly_report(year: int, month: int):
+    """월간 보고서 Excel 파일 생성."""
+    import openpyxl, tempfile, calendar
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    data = api_get("/api/analysis/monthly_report", {"year": year, "month": month})
+    if "error" in data:
+        return gr.update(), f"<p style='color:red'>⚠ {data['error']}</p>"
+
+    days       = data["days"]          # ["2026-03-01", ...]
+    all_events = data["all_events"]
+    ev_day     = data["ev_day"]        # {event: {day_str: {jeongdam, odam}}}
+    cameras    = data["cameras"]       # [{node_id, ch, name}, ...]
+    cam_day    = data["cam_day"]       # {"node_ch": {day_str: {jeongdam, odam}}}
+    ev_cam_day = data["ev_cam_day"]    # {event: {"node_ch": {day_str: {jeongdam, odam}}}}
+
+    n_days = len(days)
+    day_labels = [d[5:].replace("-", "/") for d in days]  # "03/01"
+
+    # ─── 공통 스타일 ─────────────────────────────────────────────────────────
+    HEADER_FILL  = PatternFill("solid", fgColor="4472C4")
+    HEADER2_FILL = PatternFill("solid", fgColor="8EA9DB")
+    TOTAL_FILL   = PatternFill("solid", fgColor="D9E1F2")
+    SUMROW_FILL  = PatternFill("solid", fgColor="FCE4D6")
+    WHITE_FILL   = PatternFill("solid", fgColor="FFFFFF")
+    GRAY_FILL    = PatternFill("solid", fgColor="F2F2F2")
+
+    header_font  = Font(bold=True, color="FFFFFF")
+    header2_font = Font(bold=True, color="000000")
+    bold         = Font(bold=True)
+    thin = Side(border_style="thin", color="BFBFBF")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left   = Alignment(horizontal="left",   vertical="center")
+
+    def _hdr(ws, row, col, val, fill=None, font=None, align=None):
+        c = ws.cell(row=row, column=col, value=val)
+        if fill:  c.fill = fill
+        if font:  c.font = font
+        c.alignment = align or center
+        c.border    = border
+        return c
+
+    def _val(ws, row, col, val, fill=None, font=None, align=None):
+        c = ws.cell(row=row, column=col, value=val)
+        c.border    = border
+        c.alignment = align or center
+        if fill: c.fill = fill
+        if font: c.font = font
+        return c
+
+    def _merge(ws, r1, c1, r2, c2, val, fill=None, font=None, align=None):
+        ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
+        cell = ws.cell(row=r1, column=c1, value=val)
+        cell.alignment = align or center
+        cell.border    = border
+        if fill: cell.fill = fill
+        if font: cell.font = font
+        for r in range(r1, r2+1):
+            for c_ in range(c1, c2+1):
+                ws.cell(row=r, column=c_).border = border
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SHEET 1: 전체 (event × day)
+    # 열 구조: [이벤트 | 03/01 정탐 | 03/01 오탐 | 03/02 정탐 | ... | 월합계 정탐 | 월합계 오탐 | 월합계]
+    # ─────────────────────────────────────────────────────────────────────────
+    def build_sheet1(wb):
+        ws = wb.active
+        ws.title = "전체"
+
+        LEFT_COLS = 1   # 이벤트
+
+        # Row 1: 날짜 머리글 (병합)
+        _merge(ws, 1, 1, 2, 1, "이벤트", fill=HEADER_FILL, font=header_font)
+        for i, dlabel in enumerate(day_labels):
+            col = LEFT_COLS + 1 + i * 2
+            _merge(ws, 1, col, 1, col+1, dlabel, fill=HEADER_FILL, font=header_font)
+        total_col_start = LEFT_COLS + 1 + n_days * 2
+        _merge(ws, 1, total_col_start, 1, total_col_start+1, "월합계", fill=HEADER_FILL, font=header_font)
+
+        # Row 2: 정탐/오탐 반복
+        for i in range(n_days):
+            col = LEFT_COLS + 1 + i * 2
+            _hdr(ws, 2, col,   "정탐", fill=HEADER2_FILL, font=header2_font)
+            _hdr(ws, 2, col+1, "오탐", fill=HEADER2_FILL, font=header2_font)
+        _hdr(ws, 2, total_col_start,   "정탐", fill=TOTAL_FILL, font=bold)
+        _hdr(ws, 2, total_col_start+1, "오탐", fill=TOTAL_FILL, font=bold)
+
+        # Data rows
+        month_jd_by_day = [0] * n_days
+        month_od_by_day = [0] * n_days
+
+        for row_idx, ev in enumerate(all_events):
+            r = 3 + row_idx
+            fill = GRAY_FILL if row_idx % 2 == 1 else WHITE_FILL
+            _val(ws, r, 1, ev, fill=fill, align=left)
+            ev_data = ev_day.get(ev, {})
+            total_jd = total_od = 0
+            for i, ds in enumerate(days):
+                col = LEFT_COLS + 1 + i * 2
+                jd = ev_data.get(ds, {}).get("jeongdam", 0)
+                od = ev_data.get(ds, {}).get("odam", 0)
+                _val(ws, r, col,   jd or 0, fill=fill)
+                _val(ws, r, col+1, od or 0, fill=fill)
+                total_jd += jd
+                total_od += od
+                month_jd_by_day[i] += jd
+                month_od_by_day[i] += od
+            _val(ws, r, total_col_start,   total_jd or 0, fill=fill, font=bold)
+            _val(ws, r, total_col_start+1, total_od or 0, fill=fill, font=bold)
+
+        # Summary rows at bottom
+        sum_row = 3 + len(all_events)
+        _val(ws, sum_row, 1, "정탐합계", fill=SUMROW_FILL, font=bold, align=left)
+        grand_jd = 0
+        for i in range(n_days):
+            col = LEFT_COLS + 1 + i * 2
+            _val(ws, sum_row, col,   month_jd_by_day[i], fill=SUMROW_FILL, font=bold)
+            _val(ws, sum_row, col+1, "",                 fill=SUMROW_FILL)
+            grand_jd += month_jd_by_day[i]
+        _val(ws, sum_row, total_col_start,   grand_jd, fill=SUMROW_FILL, font=bold)
+        _val(ws, sum_row, total_col_start+1, "",        fill=SUMROW_FILL)
+
+        od_row = sum_row + 1
+        _val(ws, od_row, 1, "오탐합계", fill=SUMROW_FILL, font=bold, align=left)
+        grand_od = 0
+        for i in range(n_days):
+            col = LEFT_COLS + 1 + i * 2
+            _val(ws, od_row, col,   "",                 fill=SUMROW_FILL)
+            _val(ws, od_row, col+1, month_od_by_day[i], fill=SUMROW_FILL, font=bold)
+            grand_od += month_od_by_day[i]
+        _val(ws, od_row, total_col_start,   "",       fill=SUMROW_FILL)
+        _val(ws, od_row, total_col_start+1, grand_od, fill=SUMROW_FILL, font=bold)
+
+        total_row = od_row + 1
+        _val(ws, total_row, 1, "전체합계", fill=SUMROW_FILL, font=bold, align=left)
+        for i in range(n_days):
+            col = LEFT_COLS + 1 + i * 2
+            day_total = month_jd_by_day[i] + month_od_by_day[i]
+            _merge(ws, total_row, col, total_row, col+1, day_total, fill=SUMROW_FILL, font=bold)
+        grand_total = grand_jd + grand_od
+        _merge(ws, total_row, total_col_start, total_row, total_col_start+1, grand_total, fill=SUMROW_FILL, font=bold)
+
+        # column widths
+        ws.column_dimensions["A"].width = 14
+        for i in range(n_days * 2 + 2):
+            ws.column_dimensions[get_column_letter(2 + i)].width = 7
+        ws.row_dimensions[1].height = 22
+        ws.row_dimensions[2].height = 18
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SHEET builder: camera rows (used for 카메라 sheet and per-event sheets)
+    # LEFT_COLS = 3: [Node ID | Ch | 카메라명]
+    # ─────────────────────────────────────────────────────────────────────────
+    def build_camera_sheet(wb, sheet_title, day_data_map):
+        """
+        day_data_map: {cam_key("nodeid_ch"): {day_str: {jeongdam, odam}}}
+        """
+        ws = wb.create_sheet(title=sheet_title)
+        LEFT_COLS = 3
+
+        _merge(ws, 1, 1, 2, 1, "Node ID", fill=HEADER_FILL, font=header_font)
+        _merge(ws, 1, 2, 2, 2, "Ch",      fill=HEADER_FILL, font=header_font)
+        _merge(ws, 1, 3, 2, 3, "카메라명",  fill=HEADER_FILL, font=header_font)
+        for i, dlabel in enumerate(day_labels):
+            col = LEFT_COLS + 1 + i * 2
+            _merge(ws, 1, col, 1, col+1, dlabel, fill=HEADER_FILL, font=header_font)
+        total_col_start = LEFT_COLS + 1 + n_days * 2
+        _merge(ws, 1, total_col_start, 1, total_col_start+1, "월합계", fill=HEADER_FILL, font=header_font)
+
+        for i in range(n_days):
+            col = LEFT_COLS + 1 + i * 2
+            _hdr(ws, 2, col,   "정탐", fill=HEADER2_FILL, font=header2_font)
+            _hdr(ws, 2, col+1, "오탐", fill=HEADER2_FILL, font=header2_font)
+        _hdr(ws, 2, total_col_start,   "정탐", fill=TOTAL_FILL, font=bold)
+        _hdr(ws, 2, total_col_start+1, "오탐", fill=TOTAL_FILL, font=bold)
+
+        month_jd_by_day = [0] * n_days
+        month_od_by_day = [0] * n_days
+
+        for row_idx, cam in enumerate(cameras):
+            r    = 3 + row_idx
+            fill = GRAY_FILL if row_idx % 2 == 1 else WHITE_FILL
+            cam_key = f"{cam['node_id']}_{cam['ch']}"
+            _val(ws, r, 1, cam["node_id"], fill=fill, align=left)
+            _val(ws, r, 2, cam["ch"],      fill=fill)
+            _val(ws, r, 3, cam["name"],    fill=fill, align=left)
+            cd = day_data_map.get(cam_key, {})
+            total_jd = total_od = 0
+            for i, ds in enumerate(days):
+                col = LEFT_COLS + 1 + i * 2
+                jd = cd.get(ds, {}).get("jeongdam", 0)
+                od = cd.get(ds, {}).get("odam", 0)
+                _val(ws, r, col,   jd or 0, fill=fill)
+                _val(ws, r, col+1, od or 0, fill=fill)
+                total_jd += jd
+                total_od += od
+                month_jd_by_day[i] += jd
+                month_od_by_day[i] += od
+            _val(ws, r, total_col_start,   total_jd or 0, fill=fill, font=bold)
+            _val(ws, r, total_col_start+1, total_od or 0, fill=fill, font=bold)
+
+        # summary rows
+        sum_row = 3 + len(cameras)
+        _val(ws, sum_row, 1, "정탐합계", fill=SUMROW_FILL, font=bold)
+        ws.merge_cells(start_row=sum_row, start_column=1, end_row=sum_row, end_column=3)
+        grand_jd = 0
+        for i in range(n_days):
+            col = LEFT_COLS + 1 + i * 2
+            _val(ws, sum_row, col,   month_jd_by_day[i], fill=SUMROW_FILL, font=bold)
+            _val(ws, sum_row, col+1, "",                 fill=SUMROW_FILL)
+            grand_jd += month_jd_by_day[i]
+        _val(ws, sum_row, total_col_start,   grand_jd, fill=SUMROW_FILL, font=bold)
+        _val(ws, sum_row, total_col_start+1, "",        fill=SUMROW_FILL)
+
+        od_row = sum_row + 1
+        _val(ws, od_row, 1, "오탐합계", fill=SUMROW_FILL, font=bold)
+        ws.merge_cells(start_row=od_row, start_column=1, end_row=od_row, end_column=3)
+        grand_od = 0
+        for i in range(n_days):
+            col = LEFT_COLS + 1 + i * 2
+            _val(ws, od_row, col,   "",                 fill=SUMROW_FILL)
+            _val(ws, od_row, col+1, month_od_by_day[i], fill=SUMROW_FILL, font=bold)
+            grand_od += month_od_by_day[i]
+        _val(ws, od_row, total_col_start,   "",       fill=SUMROW_FILL)
+        _val(ws, od_row, total_col_start+1, grand_od, fill=SUMROW_FILL, font=bold)
+
+        total_row = od_row + 1
+        ws.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=3)
+        _val(ws, total_row, 1, "전체합계", fill=SUMROW_FILL, font=bold)
+        for i in range(n_days):
+            col = LEFT_COLS + 1 + i * 2
+            day_total = month_jd_by_day[i] + month_od_by_day[i]
+            _merge(ws, total_row, col, total_row, col+1, day_total, fill=SUMROW_FILL, font=bold)
+        _merge(ws, total_row, total_col_start, total_row, total_col_start+1,
+               grand_jd + grand_od, fill=SUMROW_FILL, font=bold)
+
+        ws.column_dimensions["A"].width = 16
+        ws.column_dimensions["B"].width = 6
+        ws.column_dimensions["C"].width = 18
+        for i in range(n_days * 2 + 2):
+            ws.column_dimensions[get_column_letter(4 + i)].width = 7
+        ws.row_dimensions[1].height = 22
+        ws.row_dimensions[2].height = 18
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BUILD WORKBOOK
+    # ─────────────────────────────────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    build_sheet1(wb)
+    build_camera_sheet(wb, "카메라", cam_day)
+    for ev in all_events:
+        sheet_ev = ev_cam_day.get(ev, {})
+        build_camera_sheet(wb, ev, sheet_ev)
+
+    tmp = tempfile.NamedTemporaryFile(
+        suffix=".xlsx", delete=False,
+        prefix=f"monthly_{year}{month:02d}_"
+    )
+    wb.save(tmp.name)
+    tmp.close()
+    return gr.update(visible=True, value=tmp.name), "<p style='color:green'>✓ 보고서 생성 완료</p>"

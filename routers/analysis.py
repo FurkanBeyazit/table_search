@@ -668,3 +668,144 @@ def get_operator_chart(reg_id: str = Query(...)):
             "odam_rate": round(odam / total * 100, 1) if total > 0 else 0.0,
         },
     }
+
+
+# ── /api/analysis/monthly_report ──────────────────────────────────────────────
+
+@router.get("/monthly_report")
+def get_monthly_report(year: int = Query(...), month: int = Query(...)):
+    """월간 보고서 데이터: event×day, camera×day, event×camera×day."""
+    import calendar
+    from datetime import date as _d
+
+    first_day = _d(year, month, 1)
+    last_day  = _d(year, month, calendar.monthrange(year, month)[1])
+    days_in_month = calendar.monthrange(year, month)[1]
+    day_list  = [_d(year, month, d) for d in range(1, days_in_month + 1)]
+
+    base_where = (
+        "prcs_yn IS NOT NULL "
+        "AND evnt_knd IN (%s, %s) "
+        "AND DATE(reg_dt) >= %s AND DATE(reg_dt) <= %s"
+    )
+    base_params = [BHVR_EVNT_KND, DST_EVNT_KND, first_day, last_day]
+
+    # ── 1. Event × day ──────────────────────────────────────────────────────
+    def ev_day_query(table, knd):
+        return database.run_query(
+            f"SELECT DATE(e.reg_dt) AS day, b.{EVENT_COL} AS et, "
+            f"  SUM(CASE WHEN e.fls_pst_yn != '0' THEN 1 ELSE 0 END) AS jeongdam, "
+            f"  SUM(CASE WHEN e.fls_pst_yn  = '0' THEN 1 ELSE 0 END) AS odam "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
+            f"AND DATE(e.reg_dt) >= %s AND DATE(e.reg_dt) <= %s "
+            f"GROUP BY DATE(e.reg_dt), b.{EVENT_COL}",
+            [knd, first_day, last_day],
+        )
+
+    ev_day = {}  # {event: {day_str: {jeongdam, odam}}}
+    for r in ev_day_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_day_query(DST_TABLE, DST_EVNT_KND):
+        if not r["day"] or not r["et"]:
+            continue
+        ev_day.setdefault(r["et"], {})
+        ds = str(r["day"])
+        ev_day[r["et"]][ds] = {
+            "jeongdam": int(r["jeongdam"] or 0),
+            "odam":     int(r["odam"]     or 0),
+        }
+
+    # ── 2. Camera × day ─────────────────────────────────────────────────────
+    def cam_day_query(table, knd):
+        return database.run_query(
+            f"SELECT DATE(e.reg_dt) AS day, "
+            f"  CAST(b.node_id AS TEXT) AS node_id, CAST(b.ch AS TEXT) AS ch, "
+            f"  SUM(CASE WHEN e.fls_pst_yn != '0' THEN 1 ELSE 0 END) AS jeongdam, "
+            f"  SUM(CASE WHEN e.fls_pst_yn  = '0' THEN 1 ELSE 0 END) AS odam "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, node_id, ch FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
+            f"AND DATE(e.reg_dt) >= %s AND DATE(e.reg_dt) <= %s "
+            f"GROUP BY DATE(e.reg_dt), b.node_id, b.ch",
+            [knd, first_day, last_day],
+        )
+
+    cam_day = {}  # {(node_id, ch): {day_str: {jeongdam, odam}}}
+    all_cams = set()
+    for r in cam_day_query(BHVR_TABLE, BHVR_EVNT_KND) + cam_day_query(DST_TABLE, DST_EVNT_KND):
+        if not r["day"]:
+            continue
+        key = (r["node_id"], r["ch"])
+        all_cams.add(key)
+        cam_day.setdefault(key, {})
+        ds = str(r["day"])
+        prev = cam_day[key].get(ds, {"jeongdam": 0, "odam": 0})
+        cam_day[key][ds] = {
+            "jeongdam": prev["jeongdam"] + int(r["jeongdam"] or 0),
+            "odam":     prev["odam"]     + int(r["odam"]     or 0),
+        }
+
+    # camera names
+    cam_names = {}
+    if all_cams:
+        ids = list({k[0] for k in all_cams})
+        ph  = ",".join(["%s"] * len(ids))
+        try:
+            name_rows = database.run_query(
+                f"SELECT DISTINCT ON (CAST(node_id AS TEXT)) "
+                f"CAST(node_id AS TEXT) AS nid, name "
+                f"FROM t_viewer_node WHERE CAST(node_id AS TEXT) IN ({ph})",
+                ids,
+            )
+            cam_names = {r["nid"]: r["name"] for r in name_rows}
+        except Exception:
+            pass
+
+    cameras = sorted(all_cams)  # [(node_id, ch), ...]
+
+    # ── 3. Event × camera × day ─────────────────────────────────────────────
+    def ev_cam_day_query(table, knd):
+        return database.run_query(
+            f"SELECT DATE(e.reg_dt) AS day, b.{EVENT_COL} AS et, "
+            f"  CAST(b.node_id AS TEXT) AS node_id, CAST(b.ch AS TEXT) AS ch, "
+            f"  SUM(CASE WHEN e.fls_pst_yn != '0' THEN 1 ELSE 0 END) AS jeongdam, "
+            f"  SUM(CASE WHEN e.fls_pst_yn  = '0' THEN 1 ELSE 0 END) AS odam "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL}, node_id, ch FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
+            f"AND DATE(e.reg_dt) >= %s AND DATE(e.reg_dt) <= %s "
+            f"GROUP BY DATE(e.reg_dt), b.{EVENT_COL}, b.node_id, b.ch",
+            [knd, first_day, last_day],
+        )
+
+    ev_cam_day = {}  # {event: {(node_id, ch): {day_str: {jeongdam, odam}}}}
+    for r in ev_cam_day_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_cam_day_query(DST_TABLE, DST_EVNT_KND):
+        if not r["day"] or not r["et"]:
+            continue
+        et  = r["et"]
+        key = (r["node_id"], r["ch"])
+        ds  = str(r["day"])
+        ev_cam_day.setdefault(et, {})
+        ev_cam_day[et].setdefault(key, {})
+        prev = ev_cam_day[et][key].get(ds, {"jeongdam": 0, "odam": 0})
+        ev_cam_day[et][key][ds] = {
+            "jeongdam": prev["jeongdam"] + int(r["jeongdam"] or 0),
+            "odam":     prev["odam"]     + int(r["odam"]     or 0),
+        }
+
+    return {
+        "year":       year,
+        "month":      month,
+        "days":       [str(d) for d in day_list],
+        "all_events": ALL_EVENTS,
+        "ev_day":     ev_day,
+        "cameras":    [{"node_id": k[0], "ch": k[1], "name": cam_names.get(k[0], "")} for k in cameras],
+        "cam_day":    {f"{k[0]}_{k[1]}": v for k, v in cam_day.items()},
+        "ev_cam_day": {
+            et: {f"{k[0]}_{k[1]}": v for k, v in cams.items()}
+            for et, cams in ev_cam_day.items()
+        },
+    }
