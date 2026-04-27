@@ -226,7 +226,7 @@ def do_period_query(ref_date: str, time_from: str, time_to: str, event: str):
 
 
 def do_export_list(start_dt: str, end_dt: str, selected_events: list, node_id_input: str):
-    """조희 List 탭 결과를 xlsx로 내보냄. 이미지 URL은 하이퍼링크로."""
+    """조회 List 탭 결과를 xlsx로 내보냄. 이미지 URL은 하이퍼링크로."""
     import openpyxl, tempfile
     from openpyxl.styles import Font
 
@@ -242,7 +242,7 @@ def do_export_list(start_dt: str, end_dt: str, selected_events: list, node_id_in
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "조희결과"
+    ws.title = "조회결과"
     ws.append(["Node ID", "Name", "Ch", "Detect Time", "Event", "이미지"])
 
     for rec in records:

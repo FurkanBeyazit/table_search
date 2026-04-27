@@ -30,6 +30,7 @@ _custom_css = """
 #excel-upload label span { font-size: 12px !important; }
 #import-btn { min-height: 110px !important; font-size: 15px !important; }
 #import-col { max-width: 150px; }
+footer { display: none !important; }
 """
 
 with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css) as app:
@@ -88,9 +89,9 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
                   <div class="home-card"
                        style="border:2px solid rgba(100,149,237,0.6);background:rgba(100,149,237,0.08)"
-                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('조희')){tabs[i].click();return;}} })()">
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('조회')){tabs[i].click();return;}} })()">
                     <span style="font-size:2.2rem">🔍</span>
-                    <span style="font-size:1rem;font-weight:600">조희</span>
+                    <span style="font-size:1rem;font-weight:600">조회</span>
                     <span style="font-size:0.75rem;opacity:0.6">Search</span>
                   </div>
 
@@ -176,9 +177,9 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
             srv_line_out  = gr.Plot(container=False, label="뷰어 비교 (line)")
             srv_hist_out  = gr.Plot(container=False, label="뷰어별 상세 (histogram)")
 
-        # ── Tab 4: 조희 ──────────────────────────────────────────────────────
-        with gr.Tab("🔍 조희", id=4):
-            gr.Markdown("## 조희 / Search")
+        # ── Tab 4: 조회 ──────────────────────────────────────────────────────
+        with gr.Tab("🔍 조회", id=4):
+            gr.Markdown("## 조회 / Search")
 
             with gr.Row():
                 start_input = gr.Textbox(
@@ -206,21 +207,21 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
             with gr.Row():
                 btn_all    = gr.Button("전체 선택 / Select All", size="sm")
                 btn_clear  = gr.Button("전체 해제 / Clear All",  size="sm")
-                btn_search = gr.Button("🔍 조희 / Search", variant="primary", scale=2)
+                btn_search = gr.Button("🔍 조회 / Search", variant="primary", scale=2)
 
             gr.Markdown("---")
 
             with gr.Tabs():
                 with gr.Tab("📊 Stats / 통계"):
-                    stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
+                    stats_out = gr.HTML("<p style='opacity:0.5'>조회 후 결과가 여기 표시됩니다.</p>")
                 with gr.Tab("📋 List / 목록"):
                     with gr.Row(equal_height=True):
                         gr.Markdown("#### 목록")
                         btn_export_list  = gr.Button("📥 Excel", size="sm", scale=0, min_width=90)
                     list_export_file = gr.File(label="", visible=False, interactive=False)
-                    list_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
+                    list_out = gr.HTML("<p style='opacity:0.5'>조회 후 결과가 여기 표시됩니다.</p>")
                 with gr.Tab("🖥 Node Stats / 노드 통계"):
-                    node_stats_out = gr.HTML("<p style='opacity:0.5'>조희 후 결과가 여기 표시됩니다.</p>")
+                    node_stats_out = gr.HTML("<p style='opacity:0.5'>조회 후 결과가 여기 표시됩니다.</p>")
 
         # ── Tab 5: 분석 ──────────────────────────────────────────────────────
         with gr.Tab("📉 분석", id=5):
@@ -233,7 +234,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                     with gr.Row():
                         precision_period = gr.Radio(
                             choices=["오늘", "7일", "14일", "21일", "전체"],
-                            value="전체",
+                            value="오늘",
                             label="기간",
                             interactive=True,
                         )
@@ -264,7 +265,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                         with gr.Row():
                             time_all_period = gr.Radio(
                                 choices=["오늘", "7일", "14일", "21일", "전체"],
-                                value="전체",
+                                value="오늘",
                                 label="기간",
                                 interactive=True,
                             )
@@ -288,7 +289,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                         with gr.Row():
                             time_dist_period = gr.Radio(
                                 choices=["오늘", "7일", "14일", "21일", "전체"],
-                                value="전체",
+                                value="오늘",
                                 label="기간",
                                 interactive=True,
                             )
@@ -313,7 +314,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                     with gr.Row():
                         false_cause_period = gr.Radio(
                             choices=["오늘", "7일", "14일", "21일", "전체"],
-                            value="전체",
+                            value="오늘",
                             label="기간",
                             interactive=True,
                         )
@@ -570,6 +571,13 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
         do_generate_monthly_report,
         inputs=[report_year, report_month],
         outputs=[report_file, report_status],
+    )
+
+    gr.HTML(
+        "<div style='text-align:center;padding:16px 0 8px;"
+        "color:#291fb8;font-size:0.78rem;border-top:1px solid #e0e0e0;margin-top:24px'>"
+        "© 2026 DANUSYS. All rights reserved."
+        "</div>"
     )
 
     app.load(load_today_tab,   outputs=_today_outs)
