@@ -80,7 +80,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                   </div>
 
                   <div class="home-card"
-                       style="border:2px solid rgba(0,188,212,0.6);background:rgba(0,188,212,0.08)"
+                       style="border:2px solid rgba(239,83,80,0.6);background:rgba(239,83,80,0.08)"
                        onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('분석')){tabs[i].click();return;}} })()">
                     <span style="font-size:2.2rem">📉</span>
                     <span style="font-size:1rem;font-weight:600">분석</span>
@@ -117,19 +117,19 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                   </div>
 
                   <div class="home-card"
-                       style="border:2px solid rgba(255,165,0,0.6);background:rgba(255,165,0,0.08)"
-                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('설정')){tabs[i].click();return;}} })()">
-                    <span style="font-size:2.2rem">⚙️</span>
-                    <span style="font-size:1rem;font-weight:600">설정</span>
-                    <span style="font-size:0.75rem;opacity:0.6">Settings</span>
-                  </div>
-
-                  <div class="home-card"
-                       style="border:2px solid rgba(34,139,34,0.6);background:rgba(34,139,34,0.08)"
+                       style="border:2px solid rgba(236,64,122,0.6);background:rgba(236,64,122,0.08)"
                        onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('Report')){tabs[i].click();return;}} })()">
                     <span style="font-size:2.2rem">📄</span>
                     <span style="font-size:1rem;font-weight:600">Report</span>
                     <span style="font-size:0.75rem;opacity:0.6">Monthly Excel</span>
+                  </div>
+                  
+                  <div class="home-card"
+                       style="border:2px solid rgba(141,110,99,0.6);background:rgba(141,110,99,0.08)"
+                       onclick="(function(){ var d=document; try{if(window.parent&&window.parent!==window)d=window.parent.document;}catch(e){} var tabs=d.querySelectorAll('button[role=tab]'); for(var i=0;i<tabs.length;i++){if(tabs[i].textContent.includes('설정')){tabs[i].click();return;}} })()">
+                    <span style="font-size:2.2rem">⚙️</span>
+                    <span style="font-size:1rem;font-weight:600">설정</span>
+                    <span style="font-size:0.75rem;opacity:0.6">Settings</span>
                   </div>
 
                 </div>
@@ -575,7 +575,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
     gr.HTML(
         "<div style='text-align:center;padding:16px 0 8px;"
-        "color:#291fb8;font-size:0.78rem;border-top:1px solid #e0e0e0;margin-top:24px'>"
+        "color:#291fb8;font-size:0.78rem;margin-top:24px'>"
         "© 2026 DANUSYS. All rights reserved."
         "</div>"
     )
@@ -590,4 +590,4 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
 if __name__ == "__main__":
     print("\n  UI  →  http://localhost:7860\n")
-    app.launch(server_name="0.0.0.0", server_port=7860)
+    app.launch(server_name="0.0.0.0", server_port=7860, favicon_path="favicon.png")

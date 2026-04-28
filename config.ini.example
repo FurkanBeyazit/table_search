@@ -16,3 +16,13 @@ dst  = 침수,화재,연기,열감지
 
 [api]
 base_url = http://0.0.0.0:8000
+
+[mariadb]
+host     = 0.0.0.0
+port     = 3306
+user     = username
+password = password
+database = dbname
+table    = NTbl_User
+id_col   = UserID
+name_col = UserName

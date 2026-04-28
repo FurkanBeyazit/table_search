@@ -9,3 +9,4 @@ seaborn
 pandas
 openpyxl
 python-multipart
+PyMySQL

@@ -1,6 +1,12 @@
 import psycopg2
+import pymysql
 from psycopg2.extras import RealDictCursor
 from config import DATABASE_URL
+import configparser
+from pathlib import Path
+
+_ini = configparser.ConfigParser()
+_ini.read(Path(__file__).parent / "config.ini", encoding="utf-8")
 
 
 def run_query(sql: str, params=None) -> list[dict]:
@@ -22,6 +28,28 @@ def run_transaction(statements: list) -> None:
         with conn.cursor() as cur:
             for sql, params in statements:
                 cur.execute(sql, params)
+
+
+def get_operator_names() -> dict:
+    """MariaDB NTbl_User → {UserID: UserName} eşlemesi döndürür."""
+    try:
+        cfg = _ini["mariadb"]
+        conn = pymysql.connect(
+            host=cfg["host"], port=int(cfg["port"]),
+            user=cfg["user"], password=cfg["password"],
+            database=cfg["database"],
+            cursorclass=pymysql.cursors.DictCursor,
+            connect_timeout=5,
+        )
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT `{cfg['id_col']}`, `{cfg['name_col']}` FROM `{cfg['table']}`"
+                )
+                rows = cur.fetchall()
+        return {r[cfg["id_col"]]: r[cfg["name_col"]] for r in rows}
+    except Exception:
+        return {}
 
 
 def init_db() -> None:

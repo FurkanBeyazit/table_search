@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import requests
 import gradio as gr
 from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL
+from database import get_operator_names
 from ui_charts import (build_histogram, build_line_chart, build_server_line,
     build_server_histogram, build_precision_bar, build_precision_trend,
     build_precision_count_trend, build_false_cause_event_chart, build_time_heatmap,
@@ -301,6 +302,11 @@ def do_export_dst():
     return _export_summary_excel("dst")
 
 
+def _make_op_label(reg_id: str, name_map: dict) -> str:
+    name = name_map.get(reg_id)
+    return f"{reg_id}({name})" if name else reg_id
+
+
 def do_load_operator_init():
     """앱 시작 시 두 탭 모두 초기화: dropdown1 + chart + daily_table + dropdown2 + detail_table."""
     empty_fig  = plt.figure(figsize=(20, 9))
@@ -310,30 +316,39 @@ def do_load_operator_init():
         err = f"<p style='color:red'>⚠ {data['error']}</p>"
         return (
             gr.update(choices=[]),
-            empty_fig, empty_html,
+            empty_fig, empty_html, empty_html,
             gr.update(choices=["전체 보기"]),
             err,
         )
-    operators      = [op["reg_id"] for op in data.get("operators", [])]
-    first          = operators[0] if operators else None
+    name_map  = get_operator_names()
+    operators = [op["reg_id"] for op in data.get("operators", [])]
+    labels    = [_make_op_label(op, name_map) for op in operators]
+    first_id  = operators[0] if operators else None
+    first_lbl = labels[0]    if labels    else None
     chart_fig, daily_table, monthly_table = (
-        do_load_operator_chart(first) if first else (empty_fig, empty_html, empty_html)
+        do_load_operator_chart(first_id) if first_id else (empty_fig, empty_html, empty_html)
     )
-    detail_choices = ["전체 보기"] + operators
+    detail_labels = ["전체 보기"] + labels
     return (
-        gr.update(choices=operators, value=first),
+        gr.update(choices=labels, value=first_lbl),
         chart_fig,
         daily_table,
         monthly_table,
-        gr.update(choices=detail_choices, value="전체 보기"),
+        gr.update(choices=detail_labels, value="전체 보기"),
         do_load_operator_detail("전체 보기"),
     )
 
 
-def do_load_operator_chart(reg_id: str):
+def _label_to_id(label: str) -> str:
+    """'admin(김밍서)' → 'admin',  'admin' → 'admin'"""
+    return label.split("(")[0] if label else label
+
+
+def do_load_operator_chart(label: str):
     """14일 그래프 + 14일 일별 테이블 + 연간 월별 테이블 반환."""
     empty_fig  = plt.figure(figsize=(20, 9))
     empty_html = "<p style='opacity:0.5'>운영자를 선택하세요</p>"
+    reg_id = _label_to_id(label)
     if not reg_id:
         return empty_fig, empty_html, empty_html
     try:
@@ -349,12 +364,13 @@ def do_load_operator_chart(reg_id: str):
         return empty_fig, empty_html, empty_html
 
 
-def do_load_operator_detail(reg_id: str):
+def do_load_operator_detail(label: str):
     """비교 테이블 항상 표시. 특정 운영자 선택 시 highlight + 30일 일별 테이블 추가."""
     summary_data = api_get("/api/analysis/operator_summary")
     if "error" in summary_data:
         return f"<p style='color:red'>⚠ {summary_data['error']}</p>"
 
+    reg_id    = _label_to_id(label)
     highlight = reg_id if reg_id and reg_id != "전체 보기" else None
     html = render_operator_table(summary_data, highlight_reg_id=highlight)
 
