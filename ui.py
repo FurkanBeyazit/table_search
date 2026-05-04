@@ -18,7 +18,8 @@ from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_n
     do_load_precision, do_search, do_load_false_cause,
     do_load_time_dist_all, do_load_time_dist, do_period_query,
     do_load_operator_init, do_load_operator_chart, do_load_operator_detail,
-    do_export_bhvr, do_export_dst, do_export_list, do_generate_monthly_report)
+    do_export_bhvr, do_export_dst, do_export_list,
+    do_generate_monthly_report, do_generate_event_count_report)
 
 _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -447,12 +448,6 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
         # ── Tab 8: Report ─────────────────────────────────────────────────────
         with gr.Tab("📄 Report", id=8):
             gr.Markdown("## 월간 보고서 / Monthly Report")
-            gr.Markdown(
-                "선택한 연도·월의 이벤트 데이터를 **Excel(.xlsx)** 파일로 생성합니다.\n\n"
-                "- **전체 시트**: 이벤트별 × 날짜별 정탐/오탐\n"
-                "- **카메라 시트**: 카메라별 × 날짜별 정탐/오탐\n"
-                "- **이벤트별 시트** (9개): 이벤트 × 카메라 × 날짜 정탐/오탐"
-            )
             with gr.Row():
                 _now_y = datetime.now().year
                 _now_m = datetime.now().month
@@ -472,7 +467,10 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                     maximum=12,
                     scale=1,
                 )
-                btn_report = gr.Button("📄 보고서 생성", variant="primary", scale=2)
+                btn_event_count = gr.Button("📊 이벤트 현황 보고서", variant="secondary", scale=2)
+                btn_report      = gr.Button("📄 정탐/오탐 탐지 보고서", variant="primary", scale=2)
+            event_count_status = gr.HTML("")
+            event_count_file   = gr.File(label="", visible=False, interactive=False)
             report_status = gr.HTML("")
             report_file   = gr.File(label="", visible=False, interactive=False)
 
@@ -567,6 +565,11 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
         outputs=[stats_out, list_out, node_stats_out],
     )
 
+    btn_event_count.click(
+        do_generate_event_count_report,
+        inputs=[report_year, report_month],
+        outputs=[event_count_file, event_count_status],
+    )
     btn_report.click(
         do_generate_monthly_report,
         inputs=[report_year, report_month],
@@ -575,7 +578,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
     gr.HTML(
         "<div style='text-align:center;padding:16px 0 8px;"
-        "color:#291fb8;font-size:0.78rem;margin-top:24px'>"
+        "color:#1a4fa3;font-size:0.78rem;margin-top:24px'>"
         "© 2026 DANUSYS. All rights reserved."
         "</div>"
     )
