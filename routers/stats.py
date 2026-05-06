@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Query
 from datetime import date, datetime, timedelta
+from typing import List
 
 import database
 from config import BHVR_TABLE, DST_TABLE, EVENT_COL, ALL_EVENTS, BHVR_EVENTS, DST_EVENTS
@@ -171,6 +172,7 @@ def get_period_query(
     time_from: str = Query(default="00:00"),
     time_to:   str = Query(default="23:59"),
     event:     str = Query(default="전체"),
+    node_id:   List[str] = Query(default=None),
 ):
     """기간별 조회: 특정 시간대의 일별 이벤트 건수 (30일 list, 14일 chart용)."""
     today = date.today()
@@ -182,14 +184,21 @@ def get_period_query(
 
     time_cond = "AND reg_dt::time BETWEEN %s::time AND %s::time"
 
+    node_cond   = ""
+    node_params = []
+    if node_id:
+        ph = ", ".join(["%s"] * len(node_id))
+        node_cond   = f" AND CAST(node_id AS TEXT) IN ({ph})"
+        node_params = list(node_id)
+
     def query_table(table, ev_cond, ev_params):
         return database.run_query(
             f"SELECT DATE(reg_dt) AS day, COUNT(*) AS cnt "
             f"FROM {table} "
             f"WHERE DATE(reg_dt) BETWEEN %s AND %s "
-            f"{time_cond} {ev_cond} "
+            f"{time_cond} {ev_cond}{node_cond} "
             f"GROUP BY DATE(reg_dt) ORDER BY day",
-            [start30, ref, time_from, time_to] + ev_params,
+            [start30, ref, time_from, time_to] + ev_params + node_params,
         )
 
     if event == "전체":

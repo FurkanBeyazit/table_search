@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import requests
 import gradio as gr
-from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL
+from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL, VLM_EVENTS
 from database import get_operator_names
 from ui_charts import (build_histogram, build_line_chart, build_server_line,
     build_server_histogram, build_precision_bar, build_precision_trend,
@@ -136,7 +136,7 @@ def do_load_precision(period: str):
 def do_search(start_dt: str, end_dt: str, selected_events: list, node_id_input: str):
     if not selected_events:
         msg = "<p style='color:orange'>⚠ 이벤트를 하나 이상 선택하세요</p>"
-        return msg, msg, msg
+        return msg, msg, msg, {}, gr.update(choices=[], value=None)
 
     node_ids = [n.strip() for n in node_id_input.split(",") if n.strip()] if node_id_input else []
 
@@ -144,13 +144,116 @@ def do_search(start_dt: str, end_dt: str, selected_events: list, node_id_input: 
     if node_ids:
         params["node_id"] = node_ids
 
+    list_data  = api_get("/api/search/list", params)
     stats_html = render_stats(api_get("/api/search/stats", params))
-    list_html  = render_list(api_get("/api/search/list",   params))
+    list_html  = render_list(list_data)
     node_html  = render_node_stats(
         api_get("/api/search/node-stats", params),
         start_dt, end_dt, selected_events,
     )
-    return stats_html, list_html, node_html
+
+    records  = list_data.get("records", [])
+    vlm_recs = {}
+    vlm_choices = []
+    for r in records:
+        if r.get("event") not in VLM_EVENTS:
+            continue
+        key   = f"{r['node_id']}|{r['ch']}|{r['dtct_dt']}|{r['event']}"
+        label = f"{r['event']} | {r.get('node_name') or r['node_id']} | {r['dtct_dt']}"
+        vlm_recs[label] = r
+        vlm_choices.append(label)
+    vlm_dd = gr.update(
+        choices=vlm_choices,
+        value=vlm_choices[0] if vlm_choices else None,
+    )
+    return stats_html, list_html, node_html, vlm_recs, vlm_dd
+
+
+
+
+
+def _build_vlm_payload(rec: dict, img_path: str) -> dict:
+    """이미지 파일 경로로 VLM API 요청 payload 생성."""
+    import base64, pathlib, mimetypes
+    img_bytes = pathlib.Path(img_path).read_bytes()
+    img_b64   = base64.b64encode(img_bytes).decode()
+    filename  = pathlib.Path(img_path).name
+    mime_type = mimetypes.guess_type(filename)[0] or "image/jpeg"
+
+    event_json = {
+        "event_type":rec.get("event", ""),
+        "result": "비정상",
+        "event_time": f"UTC+0900:{rec['dtct_dt']}",
+        "cam_name": rec.get("node_name"),
+        "node_id": rec.get("node_id"),
+    }
+         
+    if rec.get("event") == "침수" and rec.get("dst_val") is not None:
+        event_json["additional_info"] = {"침수율": rec["dst_val"]/100}
+
+    return {
+        "event_json":      event_json,
+        "image_base64":    img_b64,
+        "image_filename":  filename,
+        "image_mime_type": mime_type,
+    }
+
+
+def do_generate_vlm_report(key: str, vlm_recs: dict, uploaded_file):
+    empty = None
+    if not key or not vlm_recs:
+        return "<p style='color:orange'>⚠ 이벤트를 선택하세요</p>", empty, empty
+
+    rec = vlm_recs.get(key)
+    if not rec:
+        return "<p style='color:red'>⚠ 이벤트 정보를 찾을 수 없습니다.</p>", empty, empty
+
+    img_path = None
+    if uploaded_file is not None:
+        if isinstance(uploaded_file, str):
+            img_path = uploaded_file
+        elif isinstance(uploaded_file, dict):
+            img_path = uploaded_file.get("name") or uploaded_file.get("path")
+        elif hasattr(uploaded_file, "name"):
+            img_path = uploaded_file.name
+        elif hasattr(uploaded_file, "path"):
+            img_path = uploaded_file.path
+
+    if not img_path:
+        return "<p style='color:red'>⚠ 이미지가 없습니다.</p>", empty, empty
+
+    import os as _os
+    if not _os.path.isfile(img_path):
+        return f"<p style='color:red'>⚠ 파일을 찾을 수 없습니다: {img_path}</p>", empty, empty
+
+    try:
+        payload = _build_vlm_payload(rec, img_path)
+        raw_in  = {k: (v if k != "image_base64" else f"<{len(v)} chars>") for k, v in payload.items()}
+        import requests
+        from config import REPORT_API_URL
+        resp = requests.post(REPORT_API_URL, json=payload, timeout=60)
+        if not resp.ok:
+            return (
+                f"<p style='color:red'>⚠ VLM API {resp.status_code}: {resp.text[:300]}</p>",
+                raw_in, None,
+            )
+        result = resp.json()
+    except requests.exceptions.ConnectionError:
+        return "<p style='color:red'>⚠ VLM API 서버에 연결할 수 없습니다.</p>", empty, empty
+    except requests.exceptions.Timeout:
+        return "<p style='color:red'>⚠ VLM API 응답 시간 초과.</p>", empty, empty
+    except Exception as e:
+        return f"<p style='color:red'>⚠ {e}</p>", empty, empty
+
+    if not result.get("success"):
+        return "<p style='color:red'>⚠ VLM API 오류</p>", raw_in, result
+
+    rj = result.get("report_json", {})
+    html = "<div style='font-size:13px;line-height:1.7;padding:8px 0'>"
+    for k in ["사고 발생일시", "장소", "사고 관제내용", "피해 우려사항", "관제센터 조치사항", "그 외 특이사항"]:
+        html += f"<b>{k}:</b> {rj.get(k, '')}<br>"
+    html += "</div>"
+    return html, raw_in, result
 
 
 def do_load_false_cause(period: str):
@@ -211,13 +314,16 @@ def do_load_time_dist(period: str):
         return err, plt.figure(figsize=(20, 4)), plt.figure(figsize=(20, 4)), plt.figure(figsize=(20, 4))
 
 
-def do_period_query(ref_date: str, time_from: str, time_to: str, event: str):
+def do_period_query(ref_date: str, time_from: str, time_to: str, event: str, node_id_input: str = ""):
+    node_ids = [n.strip() for n in (node_id_input or "").split(",") if n.strip()]
     params = {
         "ref_date":  (ref_date or "").strip(),
         "time_from": (time_from or "00:00").strip(),
         "time_to":   (time_to   or "23:59").strip(),
         "event":     event or "전체",
     }
+    if node_ids:
+        params["node_id"] = node_ids
     data      = api_get("/api/stats/period_query", params)
     empty_fig = plt.figure(figsize=(14, 5))
     if "error" in data:

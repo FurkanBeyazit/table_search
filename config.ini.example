@@ -26,3 +26,7 @@ database = dbname
 table    = NTbl_User
 id_col   = UserID
 name_col = UserName
+
+[report_api]
+url    = http://0.0.0.0:5000/generate-report
+events = 화재,침수,쓰러짐

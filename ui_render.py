@@ -2,7 +2,7 @@ import json
 import html as htmllib
 import gradio as gr
 import requests
-from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL
+from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL, VLM_EVENTS
 
 TH   = "style='border:1px solid rgba(128,128,128,0.4);padding:8px;background:rgba(128,128,128,0.15);text-align:left;font-weight:600'"
 TH_C = "style='border:1px solid rgba(128,128,128,0.4);padding:8px;background:rgba(128,128,128,0.15);text-align:center;font-weight:600'"
@@ -325,6 +325,14 @@ def render_list(data: dict) -> str:
         else:
             img_tag = "<span style='opacity:0.4'>—</span>"
 
+        if r.get("event") in VLM_EVENTS:
+            badge = ("<span style='display:inline-block;margin-top:3px;padding:1px 5px;"
+                     "font-size:10px;background:#e3f2fd;color:#1565c0;"
+                     "border:1px solid #90caf9;border-radius:3px'>📋 보고서</span>")
+            preview_cell = f"<div>{img_tag}<div>{badge}</div></div>"
+        else:
+            preview_cell = img_tag
+
         html += (
             f"<tr>"
             f"<td {TD}>{r['node_id']}</td>"
@@ -332,7 +340,7 @@ def render_list(data: dict) -> str:
             f"<td {TD_C}>{r['ch']}</td>"
             f"<td {TD}>{r['dtct_dt']}</td>"
             f"<td {TD}>{r['event']}</td>"
-            f"<td {TD_C}>{img_tag}</td>"
+            f"<td {TD_C}>{preview_cell}</td>"
             f"</tr>"
         )
     html += "</table></div>"

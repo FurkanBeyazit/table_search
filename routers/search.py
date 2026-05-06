@@ -11,6 +11,7 @@ from config import (
     BHVR_TABLE, DST_TABLE, EVENT_COL,
     BHVR_EVENTS, DST_EVENTS, ALL_EVENTS,
     LINUX_PATH_PREFIX, WINDOWS_MOUNT_LETTER, API_BASE_URL,
+    REPORT_API_URL,
 )
 
 router = APIRouter(prefix="/api/search", tags=["search"])
@@ -69,7 +70,7 @@ def build_base_sql(events: List[str], start_dt: str, end_dt: str, node_ids: List
     if bhvr:
         ph = ", ".join(["%s"] * len(bhvr))
         parts.append(
-            f"SELECT node_id, ch, reg_dt, dtct_dt, img_path, {EVENT_COL} AS event_type "
+            f"SELECT node_id, ch, reg_dt, dtct_dt, img_path, {EVENT_COL} AS event_type, NULL::float AS dst_val "
             f"FROM {BHVR_TABLE} "
             f"WHERE reg_dt BETWEEN %s AND %s AND {EVENT_COL} IN ({ph}){node_clause}"
         )
@@ -78,7 +79,7 @@ def build_base_sql(events: List[str], start_dt: str, end_dt: str, node_ids: List
     if dst:
         ph = ", ".join(["%s"] * len(dst))
         parts.append(
-            f"SELECT node_id, ch, reg_dt, dtct_dt, img_path, {EVENT_COL} AS event_type "
+            f"SELECT node_id, ch, reg_dt, dtct_dt, img_path, {EVENT_COL} AS event_type, dst_val "
             f"FROM {DST_TABLE} "
             f"WHERE reg_dt BETWEEN %s AND %s AND {EVENT_COL} IN ({ph}){node_clause}"
         )
@@ -182,6 +183,22 @@ def get_list(
         except Exception:
             pass
 
+    # node_id → management_code lookup
+    mgmt_map = {}
+    if rows:
+        ids = list({str(r["node_id"]) for r in rows})
+        ph  = ",".join(["%s"] * len(ids))
+        try:
+            mc_rows = database.run_query(
+                f"SELECT DISTINCT ON (CAST(node_id AS TEXT)) "
+                f"CAST(node_id AS TEXT) AS nid, management_code "
+                f"FROM t_viewer_node WHERE CAST(node_id AS TEXT) IN ({ph})",
+                ids,
+            )
+            mgmt_map = {r["nid"]: r["management_code"] for r in mc_rows}
+        except Exception:
+            pass
+
     return {
         "records": [
             {
@@ -192,6 +209,9 @@ def get_list(
                 "event":     r["event_type"],
                 "img_url":   img_to_api_url(r.get("img_path", "")),
                 "thumb_url": img_to_thumb_url(r.get("img_path", "")),
+                "img_path":  r.get("img_path", ""),
+                "mgmt_code": mgmt_map.get(str(r["node_id"]), ""),
+                "dst_val":   r.get("dst_val"),
             }
             for r in rows
         ]
@@ -219,6 +239,60 @@ def get_node_stats(
     return {
         "nodes": [{"node_id": r["node_id"], "ch": r["ch"], "total": r["total"]} for r in rows]
     }
+
+
+@router.get("/vlm-report")
+def generate_vlm_report(
+    node_id:    str,
+    ch:         str,
+    dtct_dt:    str,
+    event_type: str,
+    img_path:   str,
+    cam_name:   str = "",
+    mgmt_code:  str = "",
+    dst_val:    float = None,
+):
+    """이벤트 이미지 + 메타데이터를 VLM 보고서 API로 전송하고 결과 반환."""
+    import requests, base64, pathlib, mimetypes
+    from typing import Optional
+
+    win_path = linux_to_win(img_path)
+    if not os.path.isfile(win_path):
+        raise HTTPException(status_code=404, detail=f"Image not found: {win_path}")
+
+    img_bytes = pathlib.Path(win_path).read_bytes()
+    img_b64   = base64.b64encode(img_bytes).decode()
+    filename  = pathlib.Path(win_path).name
+    mime_type = mimetypes.guess_type(filename)[0] or "image/jpeg"
+
+    event_json = {
+        "event_type": event_type,
+        "result":     "비정상",
+        "event_time": f"UTC+0900:{dtct_dt}",
+        "cam_name":   cam_name,
+        "node_id":    int(node_id),
+    }
+
+    if event_type == "침수" and dst_val is not None:
+        event_json["additional_info"] = {"침수율": dst_val}
+
+    payload = {
+        "event_json":       event_json,
+        "image_base64":     img_b64,
+        "image_filename":   filename,
+        "image_mime_type":  mime_type,
+    }
+
+    try:
+        resp = requests.post(REPORT_API_URL, json=payload, timeout=60)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.ConnectionError:
+        raise HTTPException(status_code=502, detail="VLM API 서버에 연결할 수 없습니다.")
+    except requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="VLM API 응답 시간 초과.")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @router.get("/node-detail")

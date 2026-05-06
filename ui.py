@@ -1,4 +1,5 @@
 import gradio as gr
+import pathlib
 from datetime import datetime, timedelta
 from config import ALL_EVENTS, BHVR_EVENTS, DST_EVENTS, API_BASE_URL
 
@@ -19,7 +20,8 @@ from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_n
     do_load_time_dist_all, do_load_time_dist, do_period_query,
     do_load_operator_init, do_load_operator_chart, do_load_operator_detail,
     do_export_bhvr, do_export_dst, do_export_list,
-    do_generate_monthly_report, do_generate_event_count_report)
+    do_generate_monthly_report, do_generate_event_count_report,
+    do_generate_vlm_report)
 
 _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -221,6 +223,28 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                         btn_export_list  = gr.Button("📥 Excel", size="sm", scale=0, min_width=90)
                     list_export_file = gr.File(label="", visible=False, interactive=False)
                     list_out = gr.HTML("<p style='opacity:0.5'>조회 후 결과가 여기 표시됩니다.</p>")
+                    vlm_records = gr.State({})
+                    gr.HTML("<hr style='margin:16px 0'>"
+                            "<b style='font-size:14px'>📋 조치사항 보고서 생성</b>"
+                            "<span style='font-size:12px;color:#666;margin-left:8px'>"
+                            "목록에서 📋 표시된 이벤트(화재·침수·쓰러짐)를 선택하세요</span>")
+                    with gr.Row():
+                        vlm_dropdown = gr.Dropdown(label="이벤트 선택", choices=[], scale=4)
+                        btn_vlm_send = gr.Button("📤 전송", variant="primary", scale=1, min_width=80)
+                    with gr.Row():
+                        vlm_img_upload = gr.File(
+                            label="📷 이미지",
+                            file_types=["image"],
+                            scale=0,
+                            min_width=130,
+                            height=80,
+                        )
+                        with gr.Column():
+                            vlm_upload_status = gr.HTML("")
+                    vlm_report_status = gr.HTML("")
+                    with gr.Accordion("🔍 Raw JSON", open=False):
+                        vlm_raw_input  = gr.JSON(label="Request")
+                        vlm_raw_output = gr.JSON(label="Response")
                 with gr.Tab("🖥 Node Stats / 노드 통계"):
                     node_stats_out = gr.HTML("<p style='opacity:0.5'>조회 후 결과가 여기 표시됩니다.</p>")
 
@@ -442,6 +466,11 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                 )
                 btn_pq = gr.Button("🔍 조회", variant="primary", scale=1, min_width=100)
 
+            pq_node_input = gr.Textbox(
+                label="Node ID 필터 (쉼표로 구분, 비워두면 전체)",
+                placeholder="20882, 20883, 20884",
+            )
+
             pq_chart_out = gr.Plot(container=False, label="14일 그래프")
             pq_list_out  = gr.HTML("<p style='opacity:0.5'>위 조건을 설정하고 조회 버튼을 누르세요</p>")
 
@@ -553,7 +582,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
 
     btn_pq.click(
         do_period_query,
-        inputs=[pq_ref_date, pq_time_from, pq_time_to, pq_event],
+        inputs=[pq_ref_date, pq_time_from, pq_time_to, pq_event, pq_node_input],
         outputs=[pq_chart_out, pq_list_out],
     )
 
@@ -562,7 +591,17 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
     btn_search.click(
         do_search,
         inputs=[start_input, end_input, events_check, node_id_input],
-        outputs=[stats_out, list_out, node_stats_out],
+        outputs=[stats_out, list_out, node_stats_out, vlm_records, vlm_dropdown],
+    )
+    vlm_img_upload.change(
+        lambda f: (f"<p style='color:green;margin:4px 0'>✓ {pathlib.Path(f.name if hasattr(f,'name') else str(f)).name}</p>" if f else ""),
+        inputs=[vlm_img_upload],
+        outputs=[vlm_upload_status],
+    )
+    btn_vlm_send.click(
+        do_generate_vlm_report,
+        inputs=[vlm_dropdown, vlm_records, vlm_img_upload],
+        outputs=[vlm_report_status, vlm_raw_input, vlm_raw_output],
     )
 
     btn_event_count.click(

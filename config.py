@@ -20,3 +20,6 @@ BHVR_EVNT_KND = _ini.get("events", "bhvr_evnt_knd", fallback="BHAR")
 DST_EVNT_KND  = _ini.get("events", "dst_evnt_knd",  fallback="CALAMITY")
 
 API_BASE_URL = _ini["api"]["base_url"]
+
+REPORT_API_URL = _ini.get("report_api", "url",    fallback="http://172.20.14.130:5000/generate-report")
+VLM_EVENTS     = [e.strip() for e in _ini.get("report_api", "events", fallback="화재,침수,쓰러짐").split(",")]
