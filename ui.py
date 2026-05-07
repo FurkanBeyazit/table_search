@@ -21,7 +21,7 @@ from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_n
     do_load_operator_init, do_load_operator_chart, do_load_operator_detail,
     do_export_bhvr, do_export_dst, do_export_list,
     do_generate_monthly_report, do_generate_event_count_report,
-    do_generate_vlm_report)
+    do_generate_vlm_report, do_export_vlm_excel)
 
 _now           = datetime.now()
 _default_start = (_now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -36,7 +36,9 @@ _custom_css = """
 footer { display: none !important; }
 """
 
-with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css) as app:
+_vlm_head_js = ""
+
+with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css, head=_vlm_head_js) as app:
 
     with gr.Tabs() as tabs:
 
@@ -222,8 +224,8 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                         gr.Markdown("#### 목록")
                         btn_export_list  = gr.Button("📥 Excel", size="sm", scale=0, min_width=90)
                     list_export_file = gr.File(label="", visible=False, interactive=False)
-                    list_out = gr.HTML("<p style='opacity:0.5'>조회 후 결과가 여기 표시됩니다.</p>")
-                    vlm_records = gr.State({})
+                    list_out           = gr.HTML("<p style='opacity:0.5'>조회 후 결과가 여기 표시됩니다.</p>")
+                    vlm_records        = gr.State({})
                     gr.HTML("<hr style='margin:16px 0'>"
                             "<b style='font-size:14px'>📋 조치사항 보고서 생성</b>"
                             "<span style='font-size:12px;color:#666;margin-left:8px'>"
@@ -241,7 +243,11 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
                         )
                         with gr.Column():
                             vlm_upload_status = gr.HTML("")
+                    gr.HTML('<div id="vlm-js-result"></div>')
                     vlm_report_status = gr.HTML("")
+                    with gr.Row():
+                        btn_vlm_excel = gr.Button("📥 Excel 저장", size="sm", scale=0, min_width=120)
+                        vlm_excel_file = gr.File(label="", visible=False, interactive=False)
                     with gr.Accordion("🔍 Raw JSON", open=False):
                         vlm_raw_input  = gr.JSON(label="Request")
                         vlm_raw_output = gr.JSON(label="Response")
@@ -602,6 +608,11 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css)
         do_generate_vlm_report,
         inputs=[vlm_dropdown, vlm_records, vlm_img_upload],
         outputs=[vlm_report_status, vlm_raw_input, vlm_raw_output],
+    )
+    btn_vlm_excel.click(
+        do_export_vlm_excel,
+        inputs=[vlm_raw_output],
+        outputs=[vlm_excel_file],
     )
 
     btn_event_count.click(

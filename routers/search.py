@@ -1,7 +1,8 @@
 import os
 import io
+import tempfile
 from urllib.parse import quote
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Body
 from fastapi.responses import FileResponse, StreamingResponse
 from typing import List
 from datetime import datetime, timedelta
@@ -284,15 +285,131 @@ def generate_vlm_report(
     }
 
     try:
-        resp = requests.post(REPORT_API_URL, json=payload, timeout=60)
+        resp = requests.post(REPORT_API_URL, json=payload, timeout=110)
         resp.raise_for_status()
-        return resp.json()
+        result = resp.json()
+        result["_img_win_path"] = linux_to_win(img_path)
+        result["_node_id"]     = node_id
+        result["_event_type"]  = event_type
+        return result
     except requests.exceptions.ConnectionError:
         raise HTTPException(status_code=502, detail="VLM API 서버에 연결할 수 없습니다.")
     except requests.exceptions.Timeout:
         raise HTTPException(status_code=504, detail="VLM API 응답 시간 초과.")
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/vlm-excel")
+def generate_vlm_excel(result: dict = Body(...)):
+    """VLM API 결과 JSON → Excel 파일 반환."""
+    import openpyxl, io as _io
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail="VLM 결과가 없습니다.")
+
+    img_win_path = result.get("_img_win_path", "")
+    rj       = result.get("report_json", {})
+    ne       = result.get("normalized_event", {})
+    obs      = result.get("observation_text", "")
+    reporter = rj.get("보고자", {}) if isinstance(rj.get("보고자"), dict) else {}
+
+    dt_str = rj.get("사고 발생일시", "")
+    if "UTC+0900:" in dt_str:
+        dt_str = dt_str.split("UTC+0900:")[-1].strip()
+
+    rows = [
+        ("보고자 성명",       reporter.get("성명", "")),
+        ("보고자 근무조",     reporter.get("근무조", "")),
+        ("카메라",            ne.get("cam_name", "")),
+        ("Node ID",           ne.get("node_id", "")),
+        ("이벤트 유형",       ne.get("event_type", "")),
+        ("사고 발생일시",     dt_str),
+        ("장소",              rj.get("장소", "")),
+        ("관찰 내용",         obs),
+        ("사고 관제내용",     rj.get("사고 관제내용", "")),
+        ("피해 우려사항",     rj.get("피해 우려사항", "")),
+        ("관제센터 조치사항", rj.get("관제센터 조치사항", "")),
+        ("그 외 특이사항",    rj.get("그 외 특이사항", "")),
+    ]
+
+    def _row_h(val):
+        s = str(val)
+        weight = sum(2 if ord(c) > 0x2E7F else 1 for c in s)
+        lines  = max(1, weight // 60 + s.count("\n") + 1)
+        return max(18, min(lines * 18, 600))
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "조치사항 보고서"
+
+    thin   = Side(border_style="thin", color="BFBFBF")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center")
+    wrap_l = Alignment(vertical="top", wrap_text=True)
+    wrap_c = Alignment(horizontal="center", vertical="top", wrap_text=True)
+
+    ws.merge_cells("A1:B1")
+    hc = ws.cell(row=1, column=1, value="조치사항 보고서")
+    hc.font      = Font(bold=True, size=14, color="FFFFFF")
+    hc.fill      = PatternFill("solid", fgColor="1a4fa3")
+    hc.alignment = center
+    hc.border    = border
+    ws.row_dimensions[1].height = 30
+
+    for i, (label, value) in enumerate(rows):
+        r  = i + 2
+        lc = ws.cell(row=r, column=1, value=label)
+        lc.font      = Font(bold=True)
+        lc.fill      = PatternFill("solid", fgColor="D9E1F2")
+        lc.alignment = wrap_l
+        lc.border    = border
+        vc = ws.cell(row=r, column=2, value=str(value))
+        vc.alignment = wrap_l
+        vc.border    = border
+        ws.row_dimensions[r].height = _row_h(value)
+
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 65
+
+    # ── 이미지 썸네일 (하단) ─────────────────────────────────────────────────
+    if img_win_path and os.path.isfile(img_win_path):
+        try:
+            from PIL import Image as _PIL
+            from openpyxl.drawing.image import Image as _XLImg
+            pil_img = _PIL.open(img_win_path)
+            pil_img.thumbnail((320, 240), _PIL.LANCZOS)
+            iw, ih = pil_img.size
+            buf = _io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=75)
+            buf.seek(0)
+            img_row = len(rows) + 2
+            lc = ws.cell(row=img_row, column=1, value="이미지")
+            lc.font      = Font(bold=True)
+            lc.fill      = PatternFill("solid", fgColor="D9E1F2")
+            lc.alignment = wrap_l
+            lc.border    = border
+            ws.cell(row=img_row, column=2).border = border
+            ws.row_dimensions[img_row].height = int(ih * 0.75) + 6
+            xl_img = _XLImg(buf)
+            xl_img.width  = iw
+            xl_img.height = ih
+            ws.add_image(xl_img, f"B{img_row}")
+        except Exception:
+            pass
+
+    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+    node_id  = str(result.get("_node_id") or ne.get("node_id", "")).strip()
+    event_nm = str(result.get("_event_type") or ne.get("event_type", "")).strip()
+    fname    = f"vlm_report_{ts}_{node_id}_{event_nm}.xlsx"
+    path     = os.path.join(tempfile.gettempdir(), fname)
+    wb.save(path)
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=fname,
+    )
 
 
 @router.get("/node-detail")

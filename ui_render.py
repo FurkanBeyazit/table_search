@@ -55,6 +55,65 @@ def _node_btn_onclick(node_id: str, ch: str, start_dt: str, end_dt: str, events:
     return htmllib.escape("".join(js_lines))
 
 
+def _vlm_btn_onclick(node_id, ch, dtct_dt, event, img_path, cam_name, mgmt_code, dst_val):
+    api    = json.dumps(API_BASE_URL)
+    p_node = json.dumps(str(node_id))
+    p_ch   = json.dumps(str(ch))
+    p_dt   = json.dumps(str(dtct_dt))
+    p_ev   = json.dumps(str(event))
+    p_img  = json.dumps(str(img_path or ""))
+    p_cam  = json.dumps(str(cam_name or ""))
+    p_mgmt = json.dumps(str(mgmt_code or ""))
+    dst_js = "null" if dst_val is None else str(dst_val)
+
+    js_lines = [
+        "(async function(btn){",
+        "btn.disabled=true;",
+        "btn.textContent='⏳ 생성 중...';",
+        "btn.style.cssText='font-size:11px;padding:3px 8px;background:#555;color:#fff;border:none;border-radius:3px;white-space:nowrap';",
+        f"var p=new URLSearchParams({{node_id:{p_node},ch:{p_ch},dtct_dt:{p_dt},event_type:{p_ev},img_path:{p_img},cam_name:{p_cam},mgmt_code:{p_mgmt}}});",
+        f"var dst={dst_js};",
+        "if(dst!==null&&dst!==undefined)p.append('dst_val',String(dst));",
+        "var re=document.getElementById('vlm-js-result');",
+        "try{",
+        f"var r=await fetch({api}+'/api/search/vlm-report?'+p,{{signal:AbortSignal.timeout(120000)}});",
+        "if(!r.ok)throw new Error('API '+r.status+': '+await r.text());",
+        "var data=await r.json();",
+        "if(re){",
+        "var rj=data.report_json||{};",
+        "var obs=data.observation_text||'';",
+        "var rep=(typeof rj['보고자']==='object'&&rj['보고자'])||{};",
+        "var h='<div style=\"font-size:13px;line-height:1.8;padding:10px 12px;background:rgba(21,101,192,.08);border-left:3px solid #1565c0;border-radius:0 6px 6px 0;margin-top:8px\">';",
+        "['사고 발생일시','장소','사고 관제내용','피해 우려사항','관제센터 조치사항','그 외 특이사항'].forEach(function(k){if(rj[k])h+='<b>'+k+':</b> '+rj[k]+'<br>';});",
+        "if(obs)h+='<b>관찰 내용:</b> '+obs+'<br>';",
+        "if(rep['성명'])h+='<b>보고자:</b> '+rep['성명']+' / '+(rep['근무조']||'')+'<br>';",
+        "h+='</div>';",
+        "re.innerHTML=h;",
+        "}",
+        f"var er=await fetch({api}+'/api/search/vlm-excel',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(data)}});",
+        "if(er.ok){",
+        "var blob=await er.blob();",
+        "var cd=er.headers.get('Content-Disposition')||'';",
+        "var m=cd.match(/filename[^;=\\n]*=[\"']?([^\"';\\n]+)[\"']?/);",
+        "var fname=m?decodeURIComponent(m[1]):'vlm_report.xlsx';",
+        "var reader=new FileReader();",
+        "reader.onload=function(){var a=document.createElement('a');a.href=reader.result;a.download=fname;a.click();};",
+        "reader.readAsDataURL(blob);",
+        "}",
+        "btn.textContent='✅ 생성됨';",
+        "btn.style.cssText='font-size:11px;padding:3px 8px;background:#2e7d32;color:#fff;border:none;border-radius:3px;white-space:nowrap';",
+        "btn.disabled=false;",
+        "}catch(e){",
+        "if(re)re.innerHTML='<p style=\"color:red;font-size:13px\">⚠ '+e.message+'</p>';",
+        "btn.disabled=false;",
+        "btn.textContent='📋 보고서 생성';",
+        "btn.style.cssText='font-size:11px;padding:3px 8px;background:#1565c0;color:#fff;border:none;border-radius:3px;white-space:nowrap';",
+        "}",
+        "})(this);"
+    ]
+    return htmllib.escape("".join(js_lines))
+
+
 def render_today_events(data: dict) -> str:
     if "error" in data:
         return f"<p style='color:red'>⚠ {data['error']}</p>"
@@ -296,7 +355,7 @@ def render_stats(data: dict) -> str:
     return html
 
 
-def render_list(data: dict) -> str:
+def render_list(data: dict, generated_keys=None) -> str:
     if "error" in data:
         return f"<p style='color:red'>⚠ {data['error']}</p>"
     records = data.get("records", [])
@@ -311,6 +370,7 @@ def render_list(data: dict) -> str:
         f"<th {TH}>Node ID</th><th {TH}>Name</th><th {TH_C}>Ch</th>"
         f"<th {TH}>Detect Time (+9h)</th>"
         f"<th {TH}>Event / 이벤트</th><th {TH_C}>Preview</th>"
+        f"<th {TH_C}>보고서</th>"
         f"</tr>"
     )
     for r in records:
@@ -326,12 +386,19 @@ def render_list(data: dict) -> str:
             img_tag = "<span style='opacity:0.4'>—</span>"
 
         if r.get("event") in VLM_EVENTS:
-            badge = ("<span style='display:inline-block;margin-top:3px;padding:1px 5px;"
-                     "font-size:10px;background:#e3f2fd;color:#1565c0;"
-                     "border:1px solid #90caf9;border-radius:3px'>📋 보고서</span>")
-            preview_cell = f"<div>{img_tag}<div>{badge}</div></div>"
+            onclick = _vlm_btn_onclick(
+                r["node_id"], r["ch"], r["dtct_dt"], r["event"],
+                r.get("img_path") or "", r.get("node_name") or "",
+                r.get("mgmt_code") or "", r.get("dst_val"),
+            )
+            report_cell = (
+                f"<button onclick=\"{onclick}\""
+                f" style='font-size:11px;padding:3px 8px;cursor:pointer;"
+                f"background:#1565c0;color:#fff;border:none;"
+                f"border-radius:3px;white-space:nowrap'>📋 보고서 생성</button>"
+            )
         else:
-            preview_cell = img_tag
+            report_cell = "<span style='opacity:0.3'>—</span>"
 
         html += (
             f"<tr>"
@@ -340,7 +407,8 @@ def render_list(data: dict) -> str:
             f"<td {TD_C}>{r['ch']}</td>"
             f"<td {TD}>{r['dtct_dt']}</td>"
             f"<td {TD}>{r['event']}</td>"
-            f"<td {TD_C}>{preview_cell}</td>"
+            f"<td {TD_C}>{img_tag}</td>"
+            f"<td {TD_C}>{report_cell}</td>"
             f"</tr>"
         )
     html += "</table></div>"

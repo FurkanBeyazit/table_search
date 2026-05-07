@@ -17,9 +17,9 @@ from ui_render import (render_today_events, render_summary_counts, render_detail
     render_operator_monthly_table)
 
 
-def api_get(path: str, params: dict = None) -> dict:
+def api_get(path: str, params: dict = None, timeout: int = 30) -> dict:
     try:
-        r = requests.get(f"{API_BASE_URL}{path}", params=params or {}, timeout=30)
+        r = requests.get(f"{API_BASE_URL}{path}", params=params or {}, timeout=timeout)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -152,21 +152,62 @@ def do_search(start_dt: str, end_dt: str, selected_events: list, node_id_input: 
         start_dt, end_dt, selected_events,
     )
 
-    records  = list_data.get("records", [])
-    vlm_recs = {}
+    records     = list_data.get("records", [])
+    vlm_recs    = {}
     vlm_choices = []
     for r in records:
         if r.get("event") not in VLM_EVENTS:
             continue
         key   = f"{r['node_id']}|{r['ch']}|{r['dtct_dt']}|{r['event']}"
         label = f"{r['event']} | {r.get('node_name') or r['node_id']} | {r['dtct_dt']}"
-        vlm_recs[label] = r
-        vlm_choices.append(label)
+        vlm_recs[key] = r
+        vlm_choices.append((label, key))
     vlm_dd = gr.update(
         choices=vlm_choices,
-        value=vlm_choices[0] if vlm_choices else None,
+        value=vlm_choices[0][1] if vlm_choices else None,
     )
     return stats_html, list_html, node_html, vlm_recs, vlm_dd
+
+
+def do_generate_and_export(key: str, vlm_recs: dict, generated_keys, list_data: dict):
+    gkeys = set(generated_keys) if generated_keys else set()
+
+    def _fail(msg):
+        return msg, None, None, gr.update(), gkeys, render_list(list_data, gkeys)
+
+    if not key or not vlm_recs:
+        return _fail("<p style='color:orange'>⚠ 이벤트를 선택하세요</p>")
+
+    rec = vlm_recs.get(key)
+    if not rec:
+        return _fail("<p style='color:red'>⚠ 이벤트 정보를 찾을 수 없습니다.</p>")
+
+    mount_path = rec.get("img_path", "")
+    if not mount_path:
+        return _fail("<p style='color:red'>⚠ img_path 없음</p>")
+
+    params = {
+        "node_id":    str(rec["node_id"]),
+        "ch":         str(rec["ch"]),
+        "dtct_dt":    rec["dtct_dt"],
+        "event_type": rec["event"],
+        "img_path":   mount_path,
+        "cam_name":   rec.get("node_name") or "",
+        "mgmt_code":  rec.get("mgmt_code") or "",
+    }
+    if rec.get("dst_val") is not None:
+        params["dst_val"] = rec["dst_val"]
+
+    result = api_get("/api/search/vlm-report", params)
+    if "error" in result:
+        return _fail(f"<p style='color:red'>⚠ {result['error']}</p>")
+
+    raw_in = dict(params, img_path="<mount>")
+    status_html, raw_in, result = _parse_vlm_result(result, raw_in)
+    excel_file = do_export_vlm_excel(result)
+
+    new_keys = gkeys | {key}
+    return status_html, raw_in, result, excel_file, new_keys, render_list(list_data, new_keys)
 
 
 
@@ -199,6 +240,134 @@ def _build_vlm_payload(rec: dict, img_path: str) -> dict:
     }
 
 
+def _parse_vlm_result(result: dict, raw_in: dict):
+    if "error" in result:
+        return f"<p style='color:red'>⚠ {result['error']}</p>", raw_in, result
+    if not result.get("success"):
+        return "<p style='color:red'>⚠ VLM API 오류</p>", raw_in, result
+    rj  = result.get("report_json", {})
+    obs = result.get("observation_text", "")
+    reporter = rj.get("보고자", {}) if isinstance(rj.get("보고자"), dict) else {}
+    html = "<div style='font-size:13px;line-height:1.7;padding:8px 0'>"
+    html += f"<b>사고 발생일시:</b> {rj.get('사고 발생일시', '')}<br>"
+    html += f"<b>장소:</b> {rj.get('장소', '')}<br>"
+    if obs:
+        html += f"<b>관찰 내용:</b> {obs}<br>"
+    html += f"<b>사고 관제내용:</b> {rj.get('사고 관제내용', '')}<br>"
+    html += f"<b>피해 우려사항:</b> {rj.get('피해 우려사항', '')}<br>"
+    html += f"<b>관제센터 조치사항:</b> {rj.get('관제센터 조치사항', '')}<br>"
+    html += f"<b>그 외 특이사항:</b> {rj.get('그 외 특이사항', '')}<br>"
+    if reporter:
+        html += f"<b>보고자:</b> {reporter.get('성명', '')} / {reporter.get('근무조', '')}<br>"
+    html += "</div>"
+    return html, raw_in, result
+
+
+def do_export_vlm_excel(result: dict):
+    import openpyxl, tempfile, os, io as _io
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from datetime import datetime as _dt
+
+    if not result or not result.get("success"):
+        return gr.update()
+
+    img_win_path = result.get("_img_win_path", "")
+    rj       = result.get("report_json", {})
+    ne       = result.get("normalized_event", {})
+    obs      = result.get("observation_text", "")
+    reporter = rj.get("보고자", {}) if isinstance(rj.get("보고자"), dict) else {}
+
+    dt_str = rj.get("사고 발생일시", "")
+    if "UTC+0900:" in dt_str:
+        dt_str = dt_str.split("UTC+0900:")[-1].strip()
+
+    rows = [
+        ("보고자 성명",       reporter.get("성명", "")),
+        ("보고자 근무조",     reporter.get("근무조", "")),
+        ("카메라",            ne.get("cam_name", "")),
+        ("Node ID",           ne.get("node_id", "")),
+        ("이벤트 유형",       ne.get("event_type", "")),
+        ("사고 발생일시",     dt_str),
+        ("장소",              rj.get("장소", "")),
+        ("관찰 내용",         obs),
+        ("사고 관제내용",     rj.get("사고 관제내용", "")),
+        ("피해 우려사항",     rj.get("피해 우려사항", "")),
+        ("관제센터 조치사항", rj.get("관제센터 조치사항", "")),
+        ("그 외 특이사항",    rj.get("그 외 특이사항", "")),
+    ]
+
+    def _row_h(val):
+        s = str(val)
+        weight = sum(2 if ord(c) > 0x2E7F else 1 for c in s)
+        lines  = max(1, weight // 60 + s.count("\n") + 1)
+        return max(18, min(lines * 18, 600))
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "조치사항 보고서"
+
+    thin   = Side(border_style="thin", color="BFBFBF")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    wrap_l = Alignment(vertical="top", wrap_text=True)
+
+    ws.merge_cells("A1:B1")
+    hc = ws.cell(row=1, column=1, value="조치사항 보고서")
+    hc.font      = Font(bold=True, size=14, color="FFFFFF")
+    hc.fill      = PatternFill("solid", fgColor="1a4fa3")
+    hc.alignment = Alignment(horizontal="center", vertical="center")
+    hc.border    = border
+    ws.row_dimensions[1].height = 30
+
+    for i, (label, value) in enumerate(rows):
+        r  = i + 2
+        lc = ws.cell(row=r, column=1, value=label)
+        lc.font      = Font(bold=True)
+        lc.fill      = PatternFill("solid", fgColor="D9E1F2")
+        lc.alignment = wrap_l
+        lc.border    = border
+        vc = ws.cell(row=r, column=2, value=str(value))
+        vc.alignment = wrap_l
+        vc.border    = border
+        ws.row_dimensions[r].height = _row_h(value)
+
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 65
+
+    # ── 이미지 썸네일 (하단) ─────────────────────────────────────────────────
+    if img_win_path and os.path.isfile(img_win_path):
+        try:
+            from PIL import Image as _PIL
+            from openpyxl.drawing.image import Image as _XLImg
+            pil_img = _PIL.open(img_win_path)
+            pil_img.thumbnail((320, 240), _PIL.LANCZOS)
+            iw, ih = pil_img.size
+            buf = _io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=75)
+            buf.seek(0)
+            img_row = len(rows) + 2
+            lc = ws.cell(row=img_row, column=1, value="이미지")
+            lc.font      = Font(bold=True)
+            lc.fill      = PatternFill("solid", fgColor="D9E1F2")
+            lc.alignment = wrap_l
+            lc.border    = border
+            ws.cell(row=img_row, column=2).border = border
+            ws.row_dimensions[img_row].height = int(ih * 0.75) + 6
+            xl_img = _XLImg(buf)
+            xl_img.width  = iw
+            xl_img.height = ih
+            ws.add_image(xl_img, f"B{img_row}")
+        except Exception:
+            pass
+
+    ts       = _dt.now().strftime("%Y%m%d_%H%M%S")
+    node_id  = str(result.get("_node_id") or ne.get("node_id", "")).strip()
+    event_nm = str(result.get("_event_type") or ne.get("event_type", "")).strip()
+    fname    = f"vlm_report_{ts}_{node_id}_{event_nm}.xlsx"
+    path     = os.path.join(tempfile.gettempdir(), fname)
+    wb.save(path)
+    return gr.update(visible=True, value=path)
+
+
 def do_generate_vlm_report(key: str, vlm_recs: dict, uploaded_file):
     empty = None
     if not key or not vlm_recs:
@@ -208,6 +377,26 @@ def do_generate_vlm_report(key: str, vlm_recs: dict, uploaded_file):
     if not rec:
         return "<p style='color:red'>⚠ 이벤트 정보를 찾을 수 없습니다.</p>", empty, empty
 
+    # ── 1순위: 마운트 경로 → 서버 엔드포인트 ────────────────────────────────────
+    mount_path = rec.get("img_path", "")
+    if mount_path:
+        params = {
+            "node_id":    str(rec["node_id"]),
+            "ch":         str(rec["ch"]),
+            "dtct_dt":    rec["dtct_dt"],
+            "event_type": rec["event"],
+            "img_path":   mount_path,
+            "cam_name":   rec.get("node_name") or "",
+            "mgmt_code":  rec.get("mgmt_code") or "",
+        }
+        if rec.get("dst_val") is not None:
+            params["dst_val"] = rec["dst_val"]
+        result = api_get("/api/search/vlm-report", params, timeout=120)
+        if "error" not in result:
+            raw_in = dict(params, img_path="<mount>")
+            return _parse_vlm_result(result, raw_in)
+
+    # ── 2순위: 업로드 파일 (테스트 / 마운트 불가 시) ─────────────────────────────
     img_path = None
     if uploaded_file is not None:
         if isinstance(uploaded_file, str):
@@ -220,7 +409,7 @@ def do_generate_vlm_report(key: str, vlm_recs: dict, uploaded_file):
             img_path = uploaded_file.path
 
     if not img_path:
-        return "<p style='color:red'>⚠ 이미지가 없습니다.</p>", empty, empty
+        return "<p style='color:red'>⚠ 마운트 경로 없음 — 이미지를 업로드하세요.</p>", empty, empty
 
     import os as _os
     if not _os.path.isfile(img_path):
@@ -233,11 +422,11 @@ def do_generate_vlm_report(key: str, vlm_recs: dict, uploaded_file):
         from config import REPORT_API_URL
         resp = requests.post(REPORT_API_URL, json=payload, timeout=60)
         if not resp.ok:
-            return (
-                f"<p style='color:red'>⚠ VLM API {resp.status_code}: {resp.text[:300]}</p>",
-                raw_in, None,
-            )
+            return f"<p style='color:red'>⚠ VLM API {resp.status_code}: {resp.text[:300]}</p>", raw_in, None
         result = resp.json()
+        result["_img_win_path"] = img_path
+        result["_node_id"]     = str(rec.get("node_id", ""))
+        result["_event_type"]  = rec.get("event", "")
     except requests.exceptions.ConnectionError:
         return "<p style='color:red'>⚠ VLM API 서버에 연결할 수 없습니다.</p>", empty, empty
     except requests.exceptions.Timeout:
@@ -245,15 +434,7 @@ def do_generate_vlm_report(key: str, vlm_recs: dict, uploaded_file):
     except Exception as e:
         return f"<p style='color:red'>⚠ {e}</p>", empty, empty
 
-    if not result.get("success"):
-        return "<p style='color:red'>⚠ VLM API 오류</p>", raw_in, result
-
-    rj = result.get("report_json", {})
-    html = "<div style='font-size:13px;line-height:1.7;padding:8px 0'>"
-    for k in ["사고 발생일시", "장소", "사고 관제내용", "피해 우려사항", "관제센터 조치사항", "그 외 특이사항"]:
-        html += f"<b>{k}:</b> {rj.get(k, '')}<br>"
-    html += "</div>"
-    return html, raw_in, result
+    return _parse_vlm_result(result, raw_in)
 
 
 def do_load_false_cause(period: str):
