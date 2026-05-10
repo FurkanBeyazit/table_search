@@ -399,10 +399,9 @@ def generate_vlm_excel(result: dict = Body(...)):
         except Exception:
             pass
 
-    ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
-    node_id  = str(result.get("_node_id") or ne.get("node_id", "")).strip()
-    event_nm = str(result.get("_event_type") or ne.get("event_type", "")).strip()
-    fname    = f"vlm_report_{ts}_{node_id}_{event_nm}.xlsx"
+    event_nm = str(result.get("_event_type") or ne.get("event_type", "event")).strip() or "event"
+    clean_dt = "".join(c if c.isdigit() else "_" for c in dt_str).strip("_") or datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname    = f"{event_nm}_{clean_dt}.xlsx"
     path     = os.path.join(tempfile.gettempdir(), fname)
     wb.save(path)
     return FileResponse(

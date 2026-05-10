@@ -11,6 +11,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 app.include_router(search.router)
