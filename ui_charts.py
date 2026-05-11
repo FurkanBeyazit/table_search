@@ -46,9 +46,10 @@ def build_histogram(data: dict):
 
     ax.tick_params(axis="x", rotation=45, labelsize=16)
     ax.tick_params(axis="y", labelsize=15)
-    ax.legend(loc="upper right", bbox_to_anchor=(1, 1.12),
-              ncol=len(all_ev), fontsize=15, framealpha=0.6,
-              markerscale=1.8, handlelength=2)
+    if all_ev:
+        ax.legend(loc="upper right", bbox_to_anchor=(1, 1.12),
+                  ncol=len(all_ev), fontsize=15, framealpha=0.6,
+                  markerscale=1.8, handlelength=2)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     fig.tight_layout()

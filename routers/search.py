@@ -296,6 +296,9 @@ def generate_vlm_report(
         raise HTTPException(status_code=502, detail="VLM API 서버에 연결할 수 없습니다.")
     except requests.exceptions.Timeout:
         raise HTTPException(status_code=504, detail="VLM API 응답 시간 초과.")
+    except requests.exceptions.HTTPError as e:
+        body = e.response.text[:500] if e.response is not None else ""
+        raise HTTPException(status_code=502, detail=f"VLM API {e.response.status_code}: {body}")
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=502, detail=str(e))
 

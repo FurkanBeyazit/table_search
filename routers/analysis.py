@@ -4,7 +4,7 @@ from datetime import date, timedelta
 import database
 from config import (
     BHVR_TABLE, DST_TABLE, EVENT_COL, ALL_EVENTS,
-    BHVR_EVNT_KND, DST_EVNT_KND,
+    BHVR_EVNT_KND, DST_EVNT_KND, BHVR_EVENTS, DST_EVENTS,
 )
 
 router = APIRouter(prefix="/api/analysis", tags=["analysis"])
@@ -710,31 +710,34 @@ def get_monthly_report(year: int = Query(...), month: int = Query(...)):
         if not r["day"] or not r["et"]:
             continue
         ev_day.setdefault(r["et"], {})
-        ds = str(r["day"])
+        ds   = str(r["day"])
+        prev = ev_day[r["et"]].get(ds, {"jeongdam": 0, "odam": 0})
         ev_day[r["et"]][ds] = {
-            "jeongdam": int(r["jeongdam"] or 0),
-            "odam":     int(r["odam"]     or 0),
+            "jeongdam": prev["jeongdam"] + int(r["jeongdam"] or 0),
+            "odam":     prev["odam"]     + int(r["odam"]     or 0),
         }
 
     # ── 2. Camera × day ─────────────────────────────────────────────────────
-    def cam_day_query(table, knd):
+    def cam_day_query(table, knd, events):
+        ph = ",".join(["%s"] * len(events))
         return database.run_query(
             f"SELECT DATE(e.reg_dt) AS day, "
             f"  CAST(b.node_id AS TEXT) AS node_id, CAST(b.ch AS TEXT) AS ch, "
             f"  SUM(CASE WHEN e.fls_pst_yn != '0' THEN 1 ELSE 0 END) AS jeongdam, "
             f"  SUM(CASE WHEN e.fls_pst_yn  = '0' THEN 1 ELSE 0 END) AS odam "
             f"FROM t_evnt_prcs_info e "
-            f"JOIN (SELECT DISTINCT ON (seq) seq, node_id, ch FROM {table} ORDER BY seq) b "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, node_id, ch, {EVENT_COL} FROM {table} ORDER BY seq) b "
             f"  ON b.seq = e.evnt_seq "
             f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
+            f"AND b.{EVENT_COL} IN ({ph}) "
             f"AND DATE(e.reg_dt) >= %s AND DATE(e.reg_dt) <= %s "
             f"GROUP BY DATE(e.reg_dt), b.node_id, b.ch",
-            [knd, first_day, last_day],
+            [knd] + events + [first_day, last_day],
         )
 
     cam_day = {}  # {(node_id, ch): {day_str: {jeongdam, odam}}}
     all_cams = set()
-    for r in cam_day_query(BHVR_TABLE, BHVR_EVNT_KND) + cam_day_query(DST_TABLE, DST_EVNT_KND):
+    for r in cam_day_query(BHVR_TABLE, BHVR_EVNT_KND, BHVR_EVENTS) + cam_day_query(DST_TABLE, DST_EVNT_KND, DST_EVENTS):
         if not r["day"]:
             continue
         key = (r["node_id"], r["ch"])
@@ -766,7 +769,8 @@ def get_monthly_report(year: int = Query(...), month: int = Query(...)):
     cameras = sorted(all_cams)  # [(node_id, ch), ...]
 
     # ── 3. Event × camera × day ─────────────────────────────────────────────
-    def ev_cam_day_query(table, knd):
+    def ev_cam_day_query(table, knd, events):
+        ph = ",".join(["%s"] * len(events))
         return database.run_query(
             f"SELECT DATE(e.reg_dt) AS day, b.{EVENT_COL} AS et, "
             f"  CAST(b.node_id AS TEXT) AS node_id, CAST(b.ch AS TEXT) AS ch, "
@@ -776,13 +780,14 @@ def get_monthly_report(year: int = Query(...), month: int = Query(...)):
             f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL}, node_id, ch FROM {table} ORDER BY seq) b "
             f"  ON b.seq = e.evnt_seq "
             f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
+            f"AND b.{EVENT_COL} IN ({ph}) "
             f"AND DATE(e.reg_dt) >= %s AND DATE(e.reg_dt) <= %s "
             f"GROUP BY DATE(e.reg_dt), b.{EVENT_COL}, b.node_id, b.ch",
-            [knd, first_day, last_day],
+            [knd] + events + [first_day, last_day],
         )
 
     ev_cam_day = {}  # {event: {(node_id, ch): {day_str: {jeongdam, odam}}}}
-    for r in ev_cam_day_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_cam_day_query(DST_TABLE, DST_EVNT_KND):
+    for r in ev_cam_day_query(BHVR_TABLE, BHVR_EVNT_KND, BHVR_EVENTS) + ev_cam_day_query(DST_TABLE, DST_EVNT_KND, DST_EVENTS):
         if not r["day"] or not r["et"]:
             continue
         et  = r["et"]
