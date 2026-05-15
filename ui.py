@@ -227,7 +227,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css,
                     list_out           = gr.HTML("<p style='opacity:0.5'>조회 후 결과가 여기 표시됩니다.</p>")
                     vlm_records        = gr.State({})
                     gr.HTML("<hr style='margin:16px 0'>"
-                            "<b style='font-size:14px'>📋 조치사항 보고서 생성</b>"
+                            "<b style='font-size:14px'>📋 이벤트 탐지 보고서 생성</b>"
                             "<span style='font-size:12px;color:#666;margin-left:8px'>"
                             "목록에서 📋 표시된 이벤트(화재·침수·쓰러짐)를 선택하세요</span>")
                     with gr.Row():

@@ -304,22 +304,49 @@ def do_export_vlm_excel(result: dict):
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "조치사항 보고서"
+    ws.title = "이벤트 탐지 보고서"
 
     thin   = Side(border_style="thin", color="BFBFBF")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     wrap_l = Alignment(vertical="top", wrap_text=True)
 
     ws.merge_cells("A1:B1")
-    hc = ws.cell(row=1, column=1, value="조치사항 보고서")
+    hc = ws.cell(row=1, column=1, value="이벤트 탐지 보고서")
     hc.font      = Font(bold=True, size=14, color="FFFFFF")
     hc.fill      = PatternFill("solid", fgColor="1a4fa3")
     hc.alignment = Alignment(horizontal="center", vertical="center")
     hc.border    = border
     ws.row_dimensions[1].height = 30
 
+    obs_idx = next((i for i, (lbl, _) in enumerate(rows) if lbl == "관찰 내용"), None)
+
+    # 이미지 블록을 관찰 내용 바로 아래에 삽입할지 결정
+    img_row_offset = 0
+    img_row_excel  = None
+    xl_img_obj     = None
+    xl_iw = xl_ih  = 0
+
+    if img_win_path and os.path.isfile(img_win_path) and obs_idx is not None:
+        try:
+            from PIL import Image as _PIL
+            from openpyxl.drawing.image import Image as _XLImg
+            pil_img = _PIL.open(img_win_path)
+            pil_img.thumbnail((320, 240), _PIL.LANCZOS)
+            xl_iw, xl_ih = pil_img.size
+            buf = _io.BytesIO()
+            pil_img.save(buf, format="JPEG", quality=75)
+            buf.seek(0)
+            xl_img_obj    = _XLImg(buf)
+            xl_img_obj.width  = xl_iw
+            xl_img_obj.height = xl_ih
+            img_row_offset = 1  # 관찰 내용 다음 행 하나 추가
+        except Exception:
+            pass
+
     for i, (label, value) in enumerate(rows):
-        r  = i + 2
+        # 관찰 내용 이후 행은 img_row_offset 만큼 밀림
+        extra = img_row_offset if (obs_idx is not None and i > obs_idx) else 0
+        r  = i + 2 + extra
         lc = ws.cell(row=r, column=1, value=label)
         lc.font      = Font(bold=True)
         lc.fill      = PatternFill("solid", fgColor="D9E1F2")
@@ -330,34 +357,17 @@ def do_export_vlm_excel(result: dict):
         vc.border    = border
         ws.row_dimensions[r].height = _row_h(value)
 
+        if obs_idx is not None and i == obs_idx and xl_img_obj is not None:
+            img_row_excel = r + 1
+            lc2 = ws.cell(row=img_row_excel, column=1)
+            lc2.fill   = PatternFill("solid", fgColor="D9E1F2")
+            lc2.border = border
+            ws.cell(row=img_row_excel, column=2).border = border
+            ws.row_dimensions[img_row_excel].height = int(xl_ih * 0.75) + 6
+            ws.add_image(xl_img_obj, f"B{img_row_excel}")
+
     ws.column_dimensions["A"].width = 22
     ws.column_dimensions["B"].width = 65
-
-    # ── 이미지 썸네일 (하단) ─────────────────────────────────────────────────
-    if img_win_path and os.path.isfile(img_win_path):
-        try:
-            from PIL import Image as _PIL
-            from openpyxl.drawing.image import Image as _XLImg
-            pil_img = _PIL.open(img_win_path)
-            pil_img.thumbnail((320, 240), _PIL.LANCZOS)
-            iw, ih = pil_img.size
-            buf = _io.BytesIO()
-            pil_img.save(buf, format="JPEG", quality=75)
-            buf.seek(0)
-            img_row = len(rows) + 2
-            lc = ws.cell(row=img_row, column=1, value="이미지")
-            lc.font      = Font(bold=True)
-            lc.fill      = PatternFill("solid", fgColor="D9E1F2")
-            lc.alignment = wrap_l
-            lc.border    = border
-            ws.cell(row=img_row, column=2).border = border
-            ws.row_dimensions[img_row].height = int(ih * 0.75) + 6
-            xl_img = _XLImg(buf)
-            xl_img.width  = iw
-            xl_img.height = ih
-            ws.add_image(xl_img, f"B{img_row}")
-        except Exception:
-            pass
 
     event_nm = str(result.get("_event_type") or ne.get("event_type", "event")).strip() or "event"
     clean_dt = "".join(c if c.isdigit() else "_" for c in dt_str).strip("_") or _dt.now().strftime("%Y%m%d_%H%M%S")

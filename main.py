@@ -27,6 +27,6 @@ def startup():
 
 if __name__ == "__main__":
     import uvicorn
-    print("\n  API  →  http://localhost:8000")
-    print("  Docs →  http://localhost:8000/docs\n")
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    print("\n  API  →  http://localhost:8090")
+    print("  Docs →  http://localhost:8090/docs\n")
+    uvicorn.run("main:app", host="0.0.0.0", port=8090, reload=True)
