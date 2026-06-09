@@ -482,7 +482,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css,
 
         # ── Tab 8: Report ─────────────────────────────────────────────────────
         with gr.Tab("📄 Report", id=8):
-            gr.Markdown("## 월간 보고서 / Monthly Report")
+            gr.Markdown("## 월간 보고 / Monthly Report")
             with gr.Row():
                 _now_y = datetime.now().year
                 _now_m = datetime.now().month
@@ -502,8 +502,8 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css,
                     maximum=12,
                     scale=1,
                 )
-                btn_event_count = gr.Button("📊 이벤트 현황 보고서", variant="secondary", scale=2)
-                btn_report      = gr.Button("📄 정탐/오탐 탐지 보고서", variant="primary", scale=2)
+                btn_event_count = gr.Button("📊 이벤트 현황 보고", variant="secondary", scale=2)
+                btn_report      = gr.Button("📄 정탐/오탐 탐지 보고", variant="primary", scale=2)
             event_count_status = gr.HTML("")
             event_count_file   = gr.File(label="", visible=False, interactive=False)
             report_status = gr.HTML("")

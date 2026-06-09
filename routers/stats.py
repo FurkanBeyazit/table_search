@@ -1,4 +1,7 @@
+import io
+
 from fastapi import APIRouter, Query
+from fastapi.responses import Response
 from datetime import date, datetime, timedelta
 from typing import List
 
@@ -134,9 +137,12 @@ def get_summary():
 
 
 @router.get("/histogram")
-def get_histogram():
-    """최근 14일 bhvr 테이블 일별·event별 건수."""
-    today = date.today()
+def get_histogram(ref_date: str = Query(default=None)):
+    """최근 14일 bhvr 테이블 일별·event별 건수. ref_date 없으면 오늘 기준."""
+    try:
+        today = date.fromisoformat(ref_date) if ref_date else date.today()
+    except ValueError:
+        today = date.today()
     start = today - timedelta(days=13)
 
     rows = database.run_query(
@@ -162,6 +168,20 @@ def get_histogram():
         days.append({"date": ds, "label": KR_DAYS[d.weekday()], "events": day_map.get(ds, {})})
 
     return {"days": days}
+
+
+@router.get("/histogram/image")
+def get_histogram_image(ref_date: str = Query(default=None)):
+    """최근 14일 histogram chart → PNG (메일 첨부용)."""
+    import matplotlib.pyplot as plt
+    from ui_charts import build_histogram
+    data = get_histogram(ref_date=ref_date)
+    fig  = build_histogram(data)
+    buf  = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return Response(content=buf.read(), media_type="image/png")
 
 
 # ── /api/stats/period_query ────────────────────────────────────────────────────

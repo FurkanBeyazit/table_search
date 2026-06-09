@@ -24,9 +24,19 @@ def _start(period: str):
 # ── /api/analysis/precision ───────────────────────────────────────────────────
 
 @router.get("/precision")
-def get_precision(period: str = Query(default="전체")):
-    """정탐 / 오탐 분석: summary + event bazlı + node bazlı + günlük trend. 오늘/7일/14일/21일/전체 선택 가능"""
-    start = _start(period)
+def get_precision(
+    period: str = Query(default="전체"),
+    target_date: str = Query(default=None),
+):
+    """정탐 / 오탐 분석: summary + event bazlı + node bazlı + günlük trend.
+    target_date (YYYY-MM-DD) verilirse period yerine o günü filtreler (메일 스크립트용)."""
+    if target_date:
+        try:
+            start = date.fromisoformat(target_date)
+        except ValueError:
+            start = None
+    else:
+        start = _start(period)
     today = date.today()
 
     # date filter helpers

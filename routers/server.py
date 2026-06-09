@@ -1,5 +1,5 @@
 import io
-from fastapi import APIRouter, UploadFile, File
+from fastapi import APIRouter, Query, UploadFile, File
 from pydantic import BaseModel
 from datetime import date, timedelta
 
@@ -70,8 +70,11 @@ async def import_excel(file: UploadFile = File(...)):
 
 
 @router.get("/stats")
-def get_server_stats():
-    today = date.today()
+def get_server_stats(ref_date: str = Query(default=None)):
+    try:
+        today = date.fromisoformat(ref_date) if ref_date else date.today()
+    except ValueError:
+        today = date.today()
 
     viewers = database.run_query(
         "SELECT DISTINCT viewer_name FROM t_viewer_node ORDER BY viewer_name"
