@@ -50,8 +50,8 @@ def get_precision(
         f"  COUNT(*) FILTER (WHERE fls_pst_yn = '1') AS jeongdam, "
         f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0') AS odam "
         f"FROM t_evnt_prcs_info "
-        f"WHERE prcs_yn = '1' {dt_where}",
-        dt_params,
+        f"WHERE prcs_yn = '1' AND evnt_knd IN (%s, %s) {dt_where}",
+        [BHVR_EVNT_KND, DST_EVNT_KND] + dt_params,
     )
     row   = s[0] if s else {}
     total = int(row.get("total",    0) or 0)
@@ -61,17 +61,32 @@ def get_precision(
 
     summary = {"total": total, "jeongdam": jd, "odam": od, "precision": prec}
 
+    # 미확인(prcs_yn='0') 포함 전체 건수 (mail 헤더용)
+    ext = database.run_query(
+        f"SELECT "
+        f"  COUNT(*) AS grand_total, "
+        f"  COUNT(*) FILTER (WHERE evnt_knd = %s) AS bhvr_total, "
+        f"  COUNT(*) FILTER (WHERE evnt_knd = %s) AS dst_total "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE prcs_yn IS NOT NULL AND evnt_knd IN (%s, %s) {dt_where}",
+        [BHVR_EVNT_KND, DST_EVNT_KND, BHVR_EVNT_KND, DST_EVNT_KND] + dt_params,
+    )
+    ext_row = ext[0] if ext else {}
+    summary["grand_total"] = int(ext_row.get("grand_total", 0) or 0)
+    summary["bhvr_total"]  = int(ext_row.get("bhvr_total",  0) or 0)
+    summary["dst_total"]   = int(ext_row.get("dst_total",   0) or 0)
+
     # 2. Event bazlı ────────────────────────────────────────────────────────
     def ev_query(table, knd):
         return database.run_query(
             f"SELECT b.{EVENT_COL} AS et, "
             f"  COUNT(*) AS total, "
-            f"  COUNT(*) FILTER (WHERE e.fls_pst_yn = '1') AS jeongdam, "
-            f"  COUNT(*) FILTER (WHERE e.fls_pst_yn = '0') AS odam "
+            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1' AND e.fls_pst_yn = '1') AS jeongdam, "
+            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1' AND e.fls_pst_yn = '0') AS odam "
             f"FROM t_evnt_prcs_info e "
             f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
             f"  ON b.seq = e.evnt_seq "
-            f"WHERE e.evnt_knd = %s AND e.prcs_yn = '1' {dt_where} "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL {dt_where} "
             f"GROUP BY b.{EVENT_COL}",
             [knd] + dt_params,
         )
@@ -504,22 +519,37 @@ def get_time_dist_all(period: str = Query(default="전체")):
 # ── /api/analysis/operator_summary ────────────────────────────────────────────
 
 @router.get("/operator_summary")
-def get_operator_summary():
-    """운영자 목록 전체 기간, 통계는 최근 30일 기준."""
+def get_operator_summary(target_date: str = Query(default=None)):
+    """운영자 목록 전체 기간, 통계는 최근 30일 기준.
+    target_date (YYYY-MM-DD) 지정 시 해당 하루만 집계 (메일 스크립트용)."""
     from datetime import date as _d, timedelta
-    since = _d.today() - timedelta(days=29)
+
+    if target_date:
+        try:
+            day = _d.fromisoformat(target_date)
+            dt_cond  = "DATE(reg_dt) = %s"
+            dt_param = day
+            date_range = str(day)
+        except ValueError:
+            target_date = None
+
+    if not target_date:
+        dt_cond  = "DATE(reg_dt) >= %s"
+        dt_param = _d.today() - timedelta(days=29)
+        date_range = "최근 30일"
+
     rows = database.run_query(
         f"SELECT COALESCE(reg_id, '미확인') AS reg_id, "
-        f"  COUNT(*) FILTER (WHERE DATE(reg_dt) >= %s) AS total, "
-        f"  COUNT(*) FILTER (WHERE fls_pst_yn != '0' AND DATE(reg_dt) >= %s) AS jeongdam, "
-        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0'  AND DATE(reg_dt) >= %s) AS odam, "
-        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0' AND (fls_pst_knd IS NULL OR fls_pst_knd = '') AND DATE(reg_dt) >= %s) AS miipryeok "
+        f"  COUNT(*) FILTER (WHERE {dt_cond}) AS total, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn != '0' AND {dt_cond}) AS jeongdam, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0'  AND {dt_cond}) AS odam, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0' AND (fls_pst_knd IS NULL OR fls_pst_knd = '') AND {dt_cond}) AS miipryeok "
         f"FROM t_evnt_prcs_info "
         f"WHERE prcs_yn IS NOT NULL "
         f"AND evnt_knd IN (%s, %s) "
         f"GROUP BY COALESCE(reg_id, '미확인') "
         f"ORDER BY total DESC",
-        [since, since, since, since, BHVR_EVNT_KND, DST_EVNT_KND],
+        [dt_param, dt_param, dt_param, dt_param, BHVR_EVNT_KND, DST_EVNT_KND],
     )
 
     operators = []
@@ -545,7 +575,7 @@ def get_operator_summary():
         "avg_odam_rate":   avg_odam_rate,
         "avg_per_person":  avg_per_person,
         "total_operators": len(operators),
-        "date_range":      "최근 30일",
+        "date_range":      date_range,
     }
 
 

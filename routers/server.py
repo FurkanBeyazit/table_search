@@ -70,7 +70,7 @@ async def import_excel(file: UploadFile = File(...)):
 
 
 @router.get("/stats")
-def get_server_stats(ref_date: str = Query(default=None)):
+def get_server_stats(ref_date: str = Query(default=None), single_day: bool = Query(default=False)):
     try:
         today = date.fromisoformat(ref_date) if ref_date else date.today()
     except ValueError:
@@ -82,12 +82,18 @@ def get_server_stats(ref_date: str = Query(default=None)):
     if not viewers:
         return {"viewers": [], "events": ALL_EVENTS}
 
-    # 14일 event 건수 (bhvr + dst)
+    if single_day:
+        dt_where_b = "WHERE DATE(b.reg_dt) = %s::date"
+        dt_where_d = "WHERE DATE(d.reg_dt) = %s::date"
+    else:
+        dt_where_b = "WHERE b.reg_dt >= %s::date - INTERVAL '14 days'"
+        dt_where_d = "WHERE d.reg_dt >= %s::date - INTERVAL '14 days'"
+
     bhvr_ev = database.run_query(
         f"SELECT vn.viewer_name, b.{EVENT_COL} AS et, COUNT(*) AS cnt "
         f"FROM t_viewer_node vn "
         f"JOIN {BHVR_TABLE} b ON b.node_id = vn.node_id "
-        f"WHERE b.reg_dt >= %s::date - INTERVAL '14 days' "
+        f"{dt_where_b} "
         f"GROUP BY vn.viewer_name, b.{EVENT_COL}",
         [today],
     )
@@ -95,7 +101,7 @@ def get_server_stats(ref_date: str = Query(default=None)):
         f"SELECT vn.viewer_name, d.{EVENT_COL} AS et, COUNT(*) AS cnt "
         f"FROM t_viewer_node vn "
         f"JOIN {DST_TABLE} d ON d.node_id = vn.node_id "
-        f"WHERE d.reg_dt >= %s::date - INTERVAL '14 days' "
+        f"{dt_where_d} "
         f"GROUP BY vn.viewer_name, d.{EVENT_COL}",
         [today],
     )
@@ -107,12 +113,12 @@ def get_server_stats(ref_date: str = Query(default=None)):
             ev_map[v] = {}
         ev_map[v][r["et"]] = ev_map[v].get(r["et"], 0) + int(r["cnt"])
 
-    # 14일 일별 event 상세 (viewer + day + event bazlı)
+    # 일별 event 상세 (viewer + day + event bazlı)
     bhvr_daily = database.run_query(
         f"SELECT vn.viewer_name, DATE(b.reg_dt) AS day, b.{EVENT_COL} AS et, COUNT(*) AS cnt "
         f"FROM t_viewer_node vn "
         f"JOIN {BHVR_TABLE} b ON b.node_id = vn.node_id "
-        f"WHERE b.reg_dt >= %s::date - INTERVAL '14 days' "
+        f"{dt_where_b} "
         f"GROUP BY vn.viewer_name, DATE(b.reg_dt), b.{EVENT_COL}",
         [today],
     )
@@ -120,7 +126,7 @@ def get_server_stats(ref_date: str = Query(default=None)):
         f"SELECT vn.viewer_name, DATE(d.reg_dt) AS day, d.{EVENT_COL} AS et, COUNT(*) AS cnt "
         f"FROM t_viewer_node vn "
         f"JOIN {DST_TABLE} d ON d.node_id = vn.node_id "
-        f"WHERE d.reg_dt >= %s::date - INTERVAL '14 days' "
+        f"{dt_where_d} "
         f"GROUP BY vn.viewer_name, DATE(d.reg_dt), d.{EVENT_COL}",
         [today],
     )
@@ -135,7 +141,7 @@ def get_server_stats(ref_date: str = Query(default=None)):
         if ds not in daily_map[v]: daily_map[v][ds] = {}
         daily_map[v][ds][et] = daily_map[v][ds].get(et, 0) + int(r["cnt"])
 
-    dates_14 = [str(today - timedelta(days=13 - i)) for i in range(14)]
+    dates_14 = [str(today)] if single_day else [str(today - timedelta(days=13 - i)) for i in range(14)]
 
     result = []
     for v_row in viewers:
