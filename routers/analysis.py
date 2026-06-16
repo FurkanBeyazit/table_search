@@ -77,6 +77,10 @@ def get_precision(
     summary["dst_total"]   = int(ext_row.get("dst_total",   0) or 0)
 
     # 2. Event bazlı ────────────────────────────────────────────────────────
+    # 정/오탐 tarih bazı = eventin oluşma tarihi (b.reg_dt), prcs işlenme tarihi değil.
+    # Böylece 전체 (ham event tablosu) ile aynı güne düşer → 정탐+오탐 her zaman 전체'nin alt kümesi.
+    dt_where_b = "AND DATE(b.reg_dt) = %s::date" if start else ""
+
     def ev_query(table, knd):
         return database.run_query(
             f"SELECT b.{EVENT_COL} AS et, "
@@ -84,9 +88,9 @@ def get_precision(
             f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1' AND e.fls_pst_yn = '1') AS jeongdam, "
             f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1' AND e.fls_pst_yn = '0') AS odam "
             f"FROM t_evnt_prcs_info e "
-            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL}, reg_dt FROM {table} ORDER BY seq) b "
             f"  ON b.seq = e.evnt_seq "
-            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL {dt_where} "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL {dt_where_b} "
             f"GROUP BY b.{EVENT_COL}",
             [knd] + dt_params,
         )
@@ -103,8 +107,34 @@ def get_precision(
             "odam_rate": round(o / t * 100, 1) if t > 0 else 0.0,
         }
 
+    # 2b. 전체 — ham event tablolarından (server endpoint ile aynı yöntem, prcs join yok).
+    #     정/오탐 prcs'ten gelir; 전체 ise o günün gerçek event sayısı (işlenmeyenler dahil).
+    def raw_total_query(table):
+        return database.run_query(
+            f"SELECT {EVENT_COL} AS et, COUNT(*) AS cnt "
+            f"FROM {table} "
+            f"WHERE TRUE {dt_where} "
+            f"GROUP BY {EVENT_COL}",
+            dt_params,
+        )
+
+    raw_total_map = {}
+    for r in raw_total_query(BHVR_TABLE) + raw_total_query(DST_TABLE):
+        raw_total_map[r["et"]] = raw_total_map.get(r["et"], 0) + int(r["cnt"] or 0)
+
+    knd_map = {ev: BHVR_EVNT_KND for ev in BHVR_EVENTS}
+    knd_map.update({ev: DST_EVNT_KND for ev in DST_EVENTS})
+
     empty_ev = {"jeongdam": 0, "odam": 0, "total": 0, "odam_rate": 0.0}
-    events = [{"event": ev, **ev_map.get(ev, empty_ev)} for ev in ALL_EVENTS]
+    events = [
+        {
+            "event":       ev,
+            "knd":         knd_map.get(ev, ""),
+            "event_total": raw_total_map.get(ev, 0),
+            **ev_map.get(ev, empty_ev),
+        }
+        for ev in ALL_EVENTS
+    ]
 
     # 3. Node bazlı ─────────────────────────────────────────────────────────
     def node_query(table, knd):
@@ -552,12 +582,15 @@ def get_operator_summary(target_date: str = Query(default=None)):
         [dt_param, dt_param, dt_param, dt_param, BHVR_EVNT_KND, DST_EVNT_KND],
     )
 
+    names = database.get_operator_names()  # MariaDB UserID → UserName
+
     operators = []
     for r in rows:
         total = int(r["total"] or 0)
         odam  = int(r["odam"]  or 0)
         operators.append({
             "reg_id":    r["reg_id"],
+            "name":      names.get(r["reg_id"], ""),
             "total":     total,
             "jeongdam":  int(r["jeongdam"]  or 0),
             "odam":      odam,
