@@ -306,7 +306,8 @@ def _cause_label(c: str) -> str:
     return c if c else "미입력"
 
 
-def build_time_heatmap(hourly_events: dict, title: str = "시간대 × 이벤트 오탐 히트맵"):
+def build_time_heatmap(hourly_events: dict, title: str = "시간대 × 이벤트 오탐 히트맵",
+                       cbar_label: str = "오탐 건수"):
     import numpy as np
     active_evs = [ev for ev in ALL_EVENTS if any(hourly_events.get(ev, []))]
     if not active_evs:
@@ -320,7 +321,7 @@ def build_time_heatmap(hourly_events: dict, title: str = "시간대 × 이벤트
     h      = 5
     fig, ax = plt.subplots(figsize=(20, h))
     im = ax.imshow(matrix, aspect="auto", cmap="YlOrRd", interpolation="nearest")
-    plt.colorbar(im, ax=ax, shrink=0.8, label="오탐 건수")
+    plt.colorbar(im, ax=ax, shrink=0.8, label=cbar_label)
 
     ax.set_xticks(range(24))
     ax.set_xticklabels([f"{h:02d}" for h in range(24)], fontsize=10)
@@ -519,5 +520,74 @@ def build_period_chart(data: dict):
         fontsize=13,
     )
     ax.set_ylabel("건수")
+    fig.tight_layout()
+    return fig
+
+
+def build_time_combined(hourly_events: dict,
+                        line_title: str = "시간대별 이벤트 건수",
+                        heat_title: str = "이벤트 × 시간대",
+                        hidden: set = None):
+    """Yan yana birleşik figure: sol dar line (saatlik toplam) + sağ geniş heatmap
+    (event × 24 saat). `hourly_events` ({event: [24 sayı]}) ham veriden gelir.
+    `hidden` eventler hem heatmap satırlarından hem line toplamından çıkarılır;
+    line, heatmap matrisinin sütun toplamıdır → ① '전체' ile tutarlı. Tek figure döndürür."""
+    import numpy as np
+    hidden = hidden or set()
+
+    # heatmap satırları: gizli olmayan + o gün verisi olan eventler
+    active_evs = [ev for ev in ALL_EVENTS
+                  if ev not in hidden and any(hourly_events.get(ev, []))]
+
+    if not active_evs:
+        fig, ax = plt.subplots(figsize=(18, 5))
+        ax.text(0.5, 0.5, "데이터 없음", ha="center", va="center",
+                transform=ax.transAxes, fontsize=14, color="gray")
+        ax.axis("off")
+        return fig
+
+    matrix      = np.array([hourly_events.get(ev, [0]*24) for ev in active_evs], dtype=float)
+    hour_counts = matrix.sum(axis=0)          # saatlik toplam (hidden hariç) — line için
+    vmax        = matrix.max() if matrix.size else 1
+
+    fig, (ax_line, ax_heat) = plt.subplots(
+        1, 2, figsize=(18, 5),
+        gridspec_kw={"width_ratios": [1, 3], "wspace": 0.16})
+
+    # ── Sol: saatlik toplam çizgisi ─────────────────────────────
+    hours = list(range(24))
+    avg   = round(hour_counts.sum() / 24, 1)
+    ax_line.plot(hours, hour_counts, marker="o", linewidth=2, markersize=4, color="#E45756")
+    ax_line.fill_between(hours, hour_counts, alpha=0.10, color="#E45756")
+    ax_line.axhline(y=avg, color="#F58518", linewidth=1.3, linestyle="--",
+                    label=f"평균 {avg:.0f}건")
+    ax_line.axvspan(0,  6,  alpha=0.06, color="#4C78A8")
+    ax_line.axvspan(18, 23, alpha=0.06, color="#B279A2")
+    ax_line.set_xticks(range(0, 24, 3))
+    ax_line.set_xticklabels([f"{h:02d}" for h in range(0, 24, 3)], fontsize=9)
+    ax_line.set_xlabel("시간", fontsize=11)
+    ax_line.set_ylabel("건수", fontsize=11)
+    ax_line.legend(fontsize=9, loc="upper left")
+    ax_line.set_title(line_title, fontsize=12, loc="left", pad=8)
+    ax_line.spines["top"].set_visible(False)
+    ax_line.spines["right"].set_visible(False)
+
+    # ── Sağ: event × 24 saat ısı haritası ───────────────────────
+    im = ax_heat.imshow(matrix, aspect="auto", cmap="YlOrRd", interpolation="nearest",
+                        extent=[-0.5, 23.5, len(active_evs) - 0.5, -0.5])
+    fig.colorbar(im, ax=ax_heat, shrink=0.85, pad=0.02, label="건수")
+    ax_heat.set_xticks(range(24))
+    ax_heat.set_xticklabels([f"{h:02d}" for h in range(24)], fontsize=8)
+    ax_heat.set_yticks(range(len(active_evs)))
+    ax_heat.set_yticklabels(active_evs, fontsize=10)
+    ax_heat.set_xlabel("시간 (hour)", fontsize=11)
+    ax_heat.set_title(heat_title, fontsize=12, loc="left", pad=8)
+    for i in range(len(active_evs)):
+        for j in range(24):
+            v = int(matrix[i][j])
+            if v > 0:
+                ax_heat.text(j, i, v, ha="center", va="center", fontsize=6,
+                             color="black" if matrix[i][j] < vmax * 0.6 else "white")
+
     fig.tight_layout()
     return fig

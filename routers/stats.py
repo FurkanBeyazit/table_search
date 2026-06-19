@@ -10,6 +10,9 @@ from config import BHVR_TABLE, DST_TABLE, EVENT_COL, ALL_EVENTS, BHVR_EVENTS, DS
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
 
+# 메일 보고서에서 숨기는 이벤트 (① 표 ve ② 시간대 heatmap ile tutarlı)
+HIDDEN_EVENTS = {"실종", "연기", "열감지"}
+
 KR_DAYS = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
 
 
@@ -254,3 +257,66 @@ def get_period_query(
         "event":     event,
         "days":      days,
     }
+
+
+# ── /api/stats/hourly_heatmap ──────────────────────────────────────────────────
+
+@router.get("/hourly_heatmap")
+def get_hourly_heatmap(ref_date: str = Query(default=None)):
+    """특정 하루의 시간대(0~23) × 이벤트 발생 건수 (원본 테이블, 처리 여부 무관).
+    일별 리포트(메일)용 히트맵 데이터. ref_date 없으면 오늘."""
+    try:
+        day = date.fromisoformat(ref_date) if ref_date else date.today()
+    except ValueError:
+        day = date.today()
+
+    def ev_hour_query(table):
+        return database.run_query(
+            f"SELECT EXTRACT(HOUR FROM reg_dt)::int AS hr, {EVENT_COL} AS et, COUNT(*) AS cnt "
+            f"FROM {table} "
+            f"WHERE DATE(reg_dt) = %s AND reg_dt IS NOT NULL "
+            f"GROUP BY hr, {EVENT_COL}",
+            [day],
+        )
+
+    ev_hour = {}
+    total   = 0
+    for r in ev_hour_query(BHVR_TABLE) + ev_hour_query(DST_TABLE):
+        if r["hr"] is None:
+            continue
+        et  = r["et"]
+        cnt = int(r["cnt"] or 0)
+        ev_hour.setdefault(et, {})
+        ev_hour[et][int(r["hr"])] = ev_hour[et].get(int(r["hr"]), 0) + cnt
+        total += cnt
+
+    hourly_events = {
+        ev: [ev_hour.get(ev, {}).get(h, 0) for h in range(24)]
+        for ev in ALL_EVENTS
+    }
+
+    return {
+        "ref_date":      str(day),
+        "hourly_events": hourly_events,
+        "total":         total,
+    }
+
+
+@router.get("/hourly_heatmap/image")
+def get_hourly_heatmap_image(ref_date: str = Query(default=None)):
+    """일별 시간대 분포 → PNG (메일 첨부용): 좌측 라인(시간대별 총 건수) +
+    우측 히트맵(이벤트 × 시간). 숨김 이벤트는 ① 표와 동일하게 제외."""
+    import matplotlib.pyplot as plt
+    from ui_charts import build_time_combined
+    data = get_hourly_heatmap(ref_date=ref_date)
+    fig  = build_time_combined(
+        data["hourly_events"],
+        line_title=f"시간대별 이벤트 건수 ({data['ref_date']})",
+        heat_title="이벤트 × 시간대",
+        hidden=HIDDEN_EVENTS,
+    )
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    return Response(content=buf.read(), media_type="image/png")

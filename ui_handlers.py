@@ -14,7 +14,7 @@ from ui_render import (render_today_events, render_summary_counts, render_detail
     render_node_stats, render_false_cause_completion, render_false_cause_event_table,
     render_false_cause_user_table, render_time_dist_cards, render_period_list,
     render_operator_table, render_operator_daily_table, render_operator_30day_table,
-    render_operator_monthly_table)
+    render_operator_monthly_table, render_mihagin_summary, render_mihagin_list)
 
 
 def api_get(path: str, params: dict = None, timeout: int = 30) -> dict:
@@ -131,6 +131,28 @@ def do_load_precision(period: str):
         build_precision_trend(daily),
         build_precision_count_trend(daily),
     )
+
+
+def do_load_mihagin(date_from: str, date_to: str, selected_events: list = None, node_id_input: str = ""):
+    """미확인(미처리) 이벤트 조회 → 요약 HTML + 목록 HTML. 선택된 evnt_knd만 포함."""
+    if not (date_from or "").strip():
+        msg = "<p style='color:orange'>⚠ 시작 날짜를 입력하세요 (YYYY-MM-DD)</p>"
+        return msg, msg
+
+    node_ids = [n.strip() for n in (node_id_input or "").split(",") if n.strip()]
+    params = {"date_from": date_from.strip()}
+    if (date_to or "").strip():
+        params["date_to"] = date_to.strip()
+    if selected_events:
+        params["events"] = selected_events
+    if node_ids:
+        params["node_id"] = node_ids
+
+    data = api_get("/api/analysis/mihagin", params)
+    if "error" in data:
+        err = f"<p style='color:red'>⚠ {data['error']}</p>"
+        return err, err
+    return render_mihagin_summary(data), render_mihagin_list(data)
 
 
 def do_search(start_dt: str, end_dt: str, selected_events: list, node_id_input: str):
@@ -475,7 +497,8 @@ def do_load_time_dist_all(period: str):
             return err, empty_fig, empty_fig, empty_fig
         return (
             render_time_dist_cards(data.get("cards", {}), total_label="이벤트 총계"),
-            build_time_heatmap(data.get("hourly_events", {}), title="시간대 × 이벤트 히트맵 (전체)"),
+            build_time_heatmap(data.get("hourly_events", {}), title="시간대 × 이벤트 히트맵 (전체)",
+                               cbar_label="발생 건수"),
             build_time_line(data.get("hour_total", []), title="시간별 이벤트 분포 (0~23시)"),
             build_time_slot_bar(data.get("slots", [])),
         )

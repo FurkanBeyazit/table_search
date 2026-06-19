@@ -11,7 +11,7 @@ dst_table  = t_dst_anly
 event_col  = evnt_knd
 
 [events]
-bhvr = 침입,배회,쓰러짐,싸움,보행자위험
+bhvr = 침입,배회,쓰러짐,싸움,보행자위험,군집
 dst  = 침수,화재,연기,열감지
 
 [api]

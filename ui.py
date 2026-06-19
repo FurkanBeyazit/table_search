@@ -16,7 +16,7 @@ from ui_render import (render_today_events, render_summary_counts, render_detail
     render_operator_table)
 from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_names,
     do_load_nodes_by_viewer, do_import_excel, do_add_node, do_load_server_stats,
-    do_load_precision, do_search, do_load_false_cause,
+    do_load_precision, do_load_mihagin, do_search, do_load_false_cause,
     do_load_time_dist_all, do_load_time_dist, do_period_query,
     do_load_operator_init, do_load_operator_chart, do_load_operator_detail,
     do_export_bhvr, do_export_dst, do_export_list,
@@ -394,6 +394,41 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css,
                                 btn_operator_detail = gr.Button("🔄 조회", variant="primary", scale=1)
                             operator_table_out = gr.HTML("")
 
+                # ── 미확인 분석 ───────────────────────────────────────────
+                with gr.Tab("🚫 미확인 분석"):
+                    gr.Markdown(
+                        "미확인(미처리) 이벤트 — 원본 이벤트는 존재하나 운영자가 "
+                        "정탐/오탐 판정을 하지 않은 건 (`prcs_yn='1'` 레코드 없음)"
+                    )
+                    with gr.Row():
+                        mihagin_date_from = gr.Textbox(
+                            label="시작 날짜",
+                            value=_now.strftime("%Y-%m-%d"),
+                            placeholder="YYYY-MM-DD",
+                            scale=1,
+                        )
+                        mihagin_date_to = gr.Textbox(
+                            label="종료 날짜 (선택)",
+                            value="",
+                            placeholder="비우면 시작 날짜만 조회",
+                            scale=1,
+                        )
+                        btn_mihagin = gr.Button("🔍 조회", variant="primary", scale=1, min_width=100)
+
+                    mihagin_events_check = gr.CheckboxGroup(
+                        choices=ALL_EVENTS,
+                        value=ALL_EVENTS,
+                        label="이벤트 종류",
+                    )
+                    mihagin_node_input = gr.Textbox(
+                        label="Node ID 필터 (쉼표로 구분, 비워두면 전체)",
+                        placeholder="20032, 20033",
+                    )
+
+                    mihagin_summary_out = gr.HTML("")
+                    gr.Markdown("#### 미확인 목록 (최근순 최대 50건)")
+                    mihagin_list_out = gr.HTML("")
+
         # ── Tab 6: 설정 ──────────────────────────────────────────────────────
         with gr.Tab("⚙️ 설정", id=6):
             gr.Markdown("## 설정 / Settings")
@@ -585,6 +620,13 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css,
 
     btn_operator_detail.click(do_load_operator_detail, inputs=[operator_detail_select], outputs=[operator_table_out])
     operator_detail_select.change(do_load_operator_detail, inputs=[operator_detail_select], outputs=[operator_table_out])
+
+    _mihagin_outs = [mihagin_summary_out, mihagin_list_out]
+    btn_mihagin.click(
+        do_load_mihagin,
+        inputs=[mihagin_date_from, mihagin_date_to, mihagin_events_check, mihagin_node_input],
+        outputs=_mihagin_outs,
+    )
 
     btn_pq.click(
         do_period_query,

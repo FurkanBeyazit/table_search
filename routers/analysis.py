@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Query
 from datetime import date, timedelta
+from typing import List
 
 import database
 from config import (
@@ -452,28 +453,24 @@ def get_time_dist(period: str = Query(default="전체")):
 
 @router.get("/time_dist_all")
 def get_time_dist_all(period: str = Query(default="전체")):
-    """시간대별 전체 이벤트 분석: 처리된 이벤트 기준 (prcs_yn IS NOT NULL, BHAR+CALAMITY)."""
+    """시간대별 전체 발생 이벤트 분석: 원본 테이블(t_bhvr/t_dst) 발생 건수 기준.
+    정/오탐·미확인 구분 없이 '어느 시간대에 어떤 event가 얼마나 발생했는가'만 본다."""
     start     = _start(period)
     dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
     dt_params = [start] if start else []
 
-    base_filter = (
-        f"prcs_yn IS NOT NULL "
-        f"AND evnt_knd IN ('{BHVR_EVNT_KND}', '{DST_EVNT_KND}') "
-        f"AND reg_dt IS NOT NULL {dt_where}"
-    )
-
-    # 1. 시간별 총계
-    hour_rows = database.run_query(
-        f"SELECT EXTRACT(HOUR FROM reg_dt)::int AS hr, COUNT(*) AS cnt "
-        f"FROM t_evnt_prcs_info "
-        f"WHERE {base_filter} "
-        f"GROUP BY hr ORDER BY hr",
-        dt_params,
-    )
+    # 1. 시간별 총계 (원본 발생 건수, 처리 여부 무관)
+    def hour_query(table):
+        return database.run_query(
+            f"SELECT EXTRACT(HOUR FROM reg_dt)::int AS hr, COUNT(*) AS cnt "
+            f"FROM {table} "
+            f"WHERE reg_dt IS NOT NULL {dt_where} "
+            f"GROUP BY hr",
+            dt_params,
+        )
 
     hour_map = {}
-    for r in hour_rows:
+    for r in hour_query(BHVR_TABLE) + hour_query(DST_TABLE):
         if r["hr"] is None:
             continue
         h = int(r["hr"])
@@ -511,22 +508,19 @@ def get_time_dist_all(period: str = Query(default="전체")):
         {"label": "저녁 18-24", "count": eve_cnt},
     ]
 
-    # 2. 이벤트 × 시간 heatmap (t_evnt_prcs_info JOIN BHVR/DST)
-    def ev_hour_query(table, knd):
+    # 2. 이벤트 × 시간 heatmap (원본 테이블 발생 건수)
+    def ev_hour_query(table):
         return database.run_query(
-            f"SELECT EXTRACT(HOUR FROM e.reg_dt)::int AS hr, "
-            f"  b.{EVENT_COL} AS et, COUNT(*) AS cnt "
-            f"FROM t_evnt_prcs_info e "
-            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
-            f"  ON b.seq = e.evnt_seq "
-            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
-            f"AND e.reg_dt IS NOT NULL {dt_where} "
-            f"GROUP BY hr, b.{EVENT_COL}",
-            [knd] + dt_params,
+            f"SELECT EXTRACT(HOUR FROM reg_dt)::int AS hr, "
+            f"  {EVENT_COL} AS et, COUNT(*) AS cnt "
+            f"FROM {table} "
+            f"WHERE reg_dt IS NOT NULL {dt_where} "
+            f"GROUP BY hr, {EVENT_COL}",
+            dt_params,
         )
 
     ev_hour = {}
-    for r in ev_hour_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_hour_query(DST_TABLE, DST_EVNT_KND):
+    for r in ev_hour_query(BHVR_TABLE) + ev_hour_query(DST_TABLE):
         if r["hr"] is None:
             continue
         ev_hour.setdefault(r["et"], {})
@@ -886,4 +880,200 @@ def get_monthly_report(year: int = Query(...), month: int = Query(...)):
             et: {f"{k[0]}_{k[1]}": v for k, v in cams.items()}
             for et, cams in ev_cam_day.items()
         },
+    }
+
+
+# ── /api/analysis/mihagin ─────────────────────────────────────────────────────
+#
+# 미확인(未確認) = 원본 이벤트 테이블(t_bhvr_anly / t_dst_anly)에는 있으나
+#                 t_evnt_prcs_info 에 prcs_yn='1' (운영자 정탐/오탐 판정) 레코드가
+#                 없는 건. = 운영자가 아직 확인/처리하지 않은 이벤트.
+#
+# 판정 기준: 원본.seq  ↔  t_evnt_prcs_info.evnt_seq  (evnt_knd 카테고리 일치)
+#            NOT EXISTS 로 prcs_yn='1' 레코드가 없으면 미확인.
+# ※ "미입력(miipryeok)" = 오탐인데 fls_pst_knd 비어있음 → 전혀 다른 개념.
+
+def _iso(d: str) -> str:
+    """'YYYYMMDD' → 'YYYY-MM-DD'."""
+    return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+
+
+def _norm_date(s: str):
+    """'YYYY-MM-DD' / 'YYYYMMDD' → 'YYYYMMDD'. 유효하지 않으면 None."""
+    if not s:
+        return None
+    d = s.strip().replace("-", "").replace("/", "").replace(".", "")
+    return d if len(d) == 8 and d.isdigit() else None
+
+
+def _mihagin_filters(alias: str, dt_start: str, dt_end: str, events, node_ids):
+    """원본 테이블 WHERE 조건(dtct_dt 범위 + 선택 필터) + params."""
+    conds  = [f"{alias}.dtct_dt >= %s", f"{alias}.dtct_dt <= %s"]
+    params = [dt_start, dt_end]
+    if events:
+        ph = ",".join(["%s"] * len(events))
+        conds.append(f"{alias}.{EVENT_COL} IN ({ph})")
+        params += list(events)
+    if node_ids:
+        ph = ",".join(["%s"] * len(node_ids))
+        conds.append(f"CAST({alias}.node_id AS TEXT) IN ({ph})")
+        params += list(node_ids)
+    return " AND ".join(conds), params
+
+
+UNCLASSIFIED = "미분류"
+
+
+def _ev_expr(alias: str) -> str:
+    """evnt_knd 정규화: 빈 값/NULL → '미분류'. (군집 등 미정의 종류는 그대로 노출)"""
+    col = f"{alias}.{EVENT_COL}" if alias else EVENT_COL
+    return f"COALESCE(NULLIF(TRIM({col}), ''), '{UNCLASSIFIED}')"
+
+
+def _mihagin_cte(dt_start, dt_end, events, node_ids):
+    """'mihagin' CTE 정의 SQL + params (bhvr + dst, NOT EXISTS prcs_yn='1')."""
+    bw, bp = _mihagin_filters("b", dt_start, dt_end, events, node_ids)
+    dw, dp = _mihagin_filters("d", dt_start, dt_end, events, node_ids)
+    cte = (
+        "WITH mihagin AS ("
+        f"  SELECT b.seq, b.node_id, b.ch, b.dtct_dt, "
+        f"         {_ev_expr('b')} AS event_name, b.img_path, 'BHAR' AS category "
+        f"  FROM {BHVR_TABLE} b "
+        f"  WHERE {bw} "
+        f"    AND NOT EXISTS (SELECT 1 FROM t_evnt_prcs_info e "
+        f"      WHERE e.evnt_seq = b.seq AND e.evnt_knd = %s AND e.prcs_yn = '1') "
+        "  UNION ALL "
+        f"  SELECT d.seq, d.node_id, d.ch, d.dtct_dt, "
+        f"         {_ev_expr('d')} AS event_name, d.img_path, 'CALAMITY' AS category "
+        f"  FROM {DST_TABLE} d "
+        f"  WHERE {dw} "
+        f"    AND NOT EXISTS (SELECT 1 FROM t_evnt_prcs_info e "
+        f"      WHERE e.evnt_seq = d.seq AND e.evnt_knd = %s AND e.prcs_yn = '1') "
+        ") "
+    )
+    params = bp + [BHVR_EVNT_KND] + dp + [DST_EVNT_KND]
+    return cte, params
+
+
+@router.get("/mihagin")
+def get_mihagin(
+    date_from: str = Query(...),
+    date_to:   str = Query(default=None),
+    events:    List[str] = Query(default=None),
+    node_id:   List[str] = Query(default=None),
+    page:      int = Query(default=1),
+    size:      int = Query(default=50),
+):
+    """미확인 이벤트: event별 요약(건수·비율) + 상세 목록(페이지)."""
+    df = _norm_date(date_from)
+    if not df:
+        return {"error": "날짜 형식 오류 (YYYY-MM-DD)"}
+    dt = _norm_date(date_to) or df
+    if dt < df:
+        df, dt = dt, df
+    dt_start, dt_end = df + "000000", dt + "235959"
+
+    ev_list   = [e for e in (events or [])  if e] or None
+    node_list = [n for n in (node_id or []) if n] or None
+
+    cte, params = _mihagin_cte(dt_start, dt_end, ev_list, node_list)
+
+    # 1) event별 미확인 건수
+    mihagin_rows = database.run_query(
+        cte + "SELECT category, event_name, COUNT(DISTINCT seq) AS cnt "
+              "FROM mihagin GROUP BY category, event_name",
+        params,
+    )
+    mihagin_map = {(r["category"], r["event_name"]): int(r["cnt"] or 0) for r in mihagin_rows}
+
+    # 2) event별 전체 원본 건수 (비율 분모)
+    tw_b, tp_b = _mihagin_filters("b", dt_start, dt_end, ev_list, node_list)
+    tw_d, tp_d = _mihagin_filters("d", dt_start, dt_end, ev_list, node_list)
+    ev_b, ev_d = _ev_expr("b"), _ev_expr("d")
+    total_rows = database.run_query(
+        f"SELECT {ev_b} AS event_name, 'BHAR' AS category, "
+        f"  COUNT(DISTINCT seq) AS cnt FROM {BHVR_TABLE} b WHERE {tw_b} GROUP BY {ev_b} "
+        "UNION ALL "
+        f"SELECT {ev_d} AS event_name, 'CALAMITY' AS category, "
+        f"  COUNT(DISTINCT seq) AS cnt FROM {DST_TABLE} d WHERE {tw_d} GROUP BY {ev_d}",
+        tp_b + tp_d,
+    )
+    total_map = {(r["category"], r["event_name"]): int(r["cnt"] or 0) for r in total_rows}
+
+    grand_mihagin = sum(mihagin_map.values())
+    grand_all     = sum(total_map.values())
+
+    summary_events = []
+    for (cat, ev), cnt in mihagin_map.items():
+        tot = total_map.get((cat, ev), 0)
+        summary_events.append({
+            "category":   cat,
+            "event":      ev,
+            "mihagin":    cnt,
+            "total":      tot,
+            "event_rate": round(cnt / tot * 100, 1) if tot > 0 else 0.0,
+            "share":      round(cnt / grand_mihagin * 100, 1) if grand_mihagin > 0 else 0.0,
+        })
+    summary_events.sort(key=lambda x: -x["mihagin"])
+
+    summary = {
+        "total":             grand_mihagin,
+        "bhvr_total":        sum(c for (cat, _), c in mihagin_map.items() if cat == "BHAR"),
+        "dst_total":         sum(c for (cat, _), c in mihagin_map.items() if cat == "CALAMITY"),
+        "event_count_total": grand_all,
+        "overall_rate":      round(grand_mihagin / grand_all * 100, 1) if grand_all > 0 else 0.0,
+    }
+
+    # 3) 상세 목록 (중복 seq 제거 + viewer JOIN + 페이지)
+    from routers.search import img_to_thumb_url, img_to_api_url
+    page   = max(1, page)
+    offset = (page - 1) * size
+    list_rows = database.run_query(
+        cte + (
+            ", dedup AS ("
+            "  SELECT DISTINCT ON (seq, category) "
+            "    seq, node_id, ch, dtct_dt, event_name, img_path, category "
+            "  FROM mihagin ORDER BY seq, category"
+            ") "
+            "SELECT m.seq, m.node_id, m.ch, m.dtct_dt, m.event_name, m.img_path, m.category, "
+            "  v.node_name, v.viewer_name, v.management_code "
+            "FROM dedup m "
+            "LEFT JOIN (SELECT DISTINCT ON (CAST(node_id AS TEXT)) CAST(node_id AS TEXT) AS nid, "
+            "  name AS node_name, viewer_name, management_code FROM t_viewer_node) v "
+            "  ON v.nid = CAST(m.node_id AS TEXT) "
+            "ORDER BY m.dtct_dt DESC LIMIT %s OFFSET %s"
+        ),
+        params + [size, offset],
+    )
+
+    def _fmt_time(s):
+        s = str(s or "").strip()
+        return f"{s[8:10]}:{s[10:12]}:{s[12:14]}" if len(s) >= 14 and s[:14].isdigit() else s
+
+    records = []
+    for r in list_rows:
+        ip = r.get("img_path") or ""
+        records.append({
+            "seq":         r["seq"],
+            "category":    r["category"],
+            "event":       r["event_name"],
+            "node_id":     r["node_id"],
+            "node_name":   r.get("node_name") or "",
+            "ch":          r["ch"],
+            "viewer_name": r.get("viewer_name") or "",
+            "mgmt_code":   r.get("management_code") or "",
+            "dtct_dt":     r["dtct_dt"],
+            "time_str":    _fmt_time(r["dtct_dt"]),
+            "img_url":     img_to_api_url(ip),
+            "thumb_url":   img_to_thumb_url(ip),
+        })
+
+    return {
+        "date_from": _iso(df),
+        "date_to":   _iso(dt),
+        "summary":   summary,
+        "events":    summary_events,
+        "page":      page,
+        "size":      size,
+        "records":   records,
     }

@@ -805,6 +805,128 @@ def render_operator_daily_table(data: dict) -> str:
     return html
 
 
+def render_mihagin_summary(data: dict) -> str:
+    """미확인 요약: 상단 카드 + event별 미확인 건수/비율 테이블."""
+    if "error" in data:
+        return f"<p style='color:red'>⚠ {data['error']}</p>"
+
+    summary = data.get("summary", {})
+    events  = data.get("events", [])
+    df, dt  = data.get("date_from", ""), data.get("date_to", "")
+    period  = df if df == dt else f"{df} ~ {dt}"
+
+    total  = summary.get("total", 0)
+    bhvr   = summary.get("bhvr_total", 0)
+    dst    = summary.get("dst_total", 0)
+    ev_all = summary.get("event_count_total", 0)
+    rate   = summary.get("overall_rate", 0.0)
+
+    cs = "border-radius:10px;padding:18px 24px;text-align:center;flex:1;min-width:120px"
+    cards = (
+        f"<p style='opacity:0.6;margin:0 0 10px'>📅 {period} &nbsp;·&nbsp; "
+        f"전체 원본 <b>{ev_all:,}</b>건 중 미확인</p>"
+        "<div style='display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px'>"
+
+        f"<div style='{cs};background:rgba(245,133,24,0.08);border:1px solid rgba(245,133,24,0.4)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#F58518'>{total:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>총 미확인</div></div>"
+
+        f"<div style='{cs};background:rgba(76,120,168,0.08);border:1px solid rgba(76,120,168,0.35)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#4C78A8'>{bhvr:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>행동 (BHAR)</div></div>"
+
+        f"<div style='{cs};background:rgba(84,162,75,0.08);border:1px solid rgba(84,162,75,0.35)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#54A24B'>{dst:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>재난 (CALAMITY)</div></div>"
+
+        f"<div style='{cs};background:rgba(128,128,128,0.06);border:1px solid rgba(128,128,128,0.2)'>"
+        f"<div style='font-size:2rem;font-weight:700'>{rate}%</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>전체 미확인율</div></div>"
+        "</div>"
+    )
+
+    if not events:
+        return cards + "<p style='opacity:0.5'>해당 기간 미확인 이벤트 없음</p>"
+
+    rows = ""
+    for e in events:
+        er = e["event_rate"]
+        rc = "#E45756" if er > 30 else "#F58518" if er > 15 else "inherit"
+        badge = ("background:rgba(76,120,168,0.15);color:#4C78A8" if e["category"] == "BHAR"
+                 else "background:rgba(84,162,75,0.15);color:#54A24B")
+        rows += (
+            f"<tr><td {TD}><b>{htmllib.escape(str(e['event']))}</b>"
+            f" <span style='{badge};font-size:0.68rem;padding:1px 6px;border-radius:8px;"
+            f"margin-left:4px'>{e['category']}</span></td>"
+            f"<td {TD_C}><b style='color:#F58518'>{e['mihagin']:,}</b></td>"
+            f"<td {TD_C}>{e['total']:,}</td>"
+            f"<td {TD_C}><b style='color:{rc}'>{er}%</b></td>"
+            f"<td {TD_C}>{e['share']}%</td></tr>"
+        )
+
+    table = (
+        "<div style='overflow-x:auto'>"
+        "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+        f"<tr><th {TH}>이벤트</th><th {TH_C}>미확인</th><th {TH_C}>전체</th>"
+        f"<th {TH_C}>미확인율</th><th {TH_C}>점유율</th></tr>"
+        f"{rows}</table></div>"
+    )
+    return cards + table
+
+
+def render_mihagin_list(data: dict) -> str:
+    """미확인 상세 목록: 미리보기 + 시간 + 이벤트 + 카메라 + 장소 + 채널."""
+    if "error" in data:
+        return f"<p style='color:red'>⚠ {data['error']}</p>"
+    records = data.get("records", [])
+    if not records:
+        return "<p style='opacity:0.5'>미확인 목록 없음</p>"
+
+    total = data.get("summary", {}).get("total", 0)
+    page  = data.get("page", 1)
+    size  = data.get("size", 50)
+    shown = len(records)
+    first = (page - 1) * size + 1
+    last  = (page - 1) * size + shown
+
+    html  = (f"<p style='opacity:0.6;margin:0 0 8px'>총 <b>{total:,}</b>건 중 "
+             f"{first:,}~{last:,}번 표시</p>")
+    html += "<div style='overflow-x:auto'>"
+    html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
+    html += (
+        f"<tr><th {TH_C}>미리보기</th><th {TH}>시간</th><th {TH}>이벤트</th>"
+        f"<th {TH}>카메라</th><th {TH}>장소</th><th {TH_C}>채널</th></tr>"
+    )
+    for r in records:
+        if r.get("thumb_url"):
+            img_tag = (
+                f'<a href="{r["img_url"]}" target="_blank" title="원본 보기">'
+                f'<img src="{r["thumb_url"]}" width="80" height="60" loading="lazy"'
+                f' style="object-fit:cover;cursor:pointer;border-radius:3px;display:block"'
+                f" onerror=\"this.parentElement.innerHTML='📷'\"></a>"
+            )
+        else:
+            img_tag = "<span style='opacity:0.4'>—</span>"
+
+        cam  = htmllib.escape(str(r.get("node_name") or ""))
+        nid  = htmllib.escape(str(r.get("node_id") or ""))
+        cam_cell = (f"{cam} <span style='opacity:0.5'>({nid})</span>" if cam
+                    else f"<span style='opacity:0.6'>({nid})</span>")
+        place = htmllib.escape(str(r.get("viewer_name") or "")) or "<span style='opacity:0.4'>—</span>"
+        ev    = htmllib.escape(str(r.get("event") or ""))
+
+        html += (
+            f"<tr><td {TD_C}>{img_tag}</td>"
+            f"<td {TD}>{r.get('time_str', '')}</td>"
+            f"<td {TD}>{ev}</td>"
+            f"<td {TD}>{cam_cell}</td>"
+            f"<td {TD}>{place}</td>"
+            f"<td {TD_C}>{r.get('ch', '')}</td></tr>"
+        )
+    html += "</table></div>"
+    return html
+
+
 def render_period_list(data: dict) -> str:
     if "error" in data:
         return f"<p style='color:red'>⚠ {data['error']}</p>"
