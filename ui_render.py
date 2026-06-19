@@ -895,7 +895,7 @@ def render_mihagin_list(data: dict) -> str:
     html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
     html += (
         f"<tr><th {TH_C}>미리보기</th><th {TH}>시간</th><th {TH}>이벤트</th>"
-        f"<th {TH}>카메라</th><th {TH}>장소</th><th {TH_C}>채널</th></tr>"
+        f"<th {TH}>카메라</th><th {TH_C}>노드_채널</th></tr>"
     )
     for r in records:
         if r.get("thumb_url"):
@@ -908,20 +908,18 @@ def render_mihagin_list(data: dict) -> str:
         else:
             img_tag = "<span style='opacity:0.4'>—</span>"
 
-        cam  = htmllib.escape(str(r.get("node_name") or ""))
-        nid  = htmllib.escape(str(r.get("node_id") or ""))
-        cam_cell = (f"{cam} <span style='opacity:0.5'>({nid})</span>" if cam
-                    else f"<span style='opacity:0.6'>({nid})</span>")
-        place = htmllib.escape(str(r.get("viewer_name") or "")) or "<span style='opacity:0.4'>—</span>"
+        cam   = htmllib.escape(str(r.get("node_name") or "")) or "<span style='opacity:0.4'>—</span>"
+        nid   = htmllib.escape(str(r.get("node_id") or ""))
+        chv   = htmllib.escape(str(r.get("ch") or ""))
+        node_ch = f"{nid}_{chv}" if nid else chv
         ev    = htmllib.escape(str(r.get("event") or ""))
 
         html += (
             f"<tr><td {TD_C}>{img_tag}</td>"
             f"<td {TD}>{r.get('time_str', '')}</td>"
             f"<td {TD}>{ev}</td>"
-            f"<td {TD}>{cam_cell}</td>"
-            f"<td {TD}>{place}</td>"
-            f"<td {TD_C}>{r.get('ch', '')}</td></tr>"
+            f"<td {TD}>{cam}</td>"
+            f"<td {TD_C}>{node_ch}</td></tr>"
         )
     html += "</table></div>"
     return html
@@ -967,3 +965,54 @@ def render_period_list(data: dict) -> str:
         )
     html += "</table></div>"
     return html
+
+
+def render_precision_period_breakdown(ev_day: dict, days: list) -> str:
+    """이벤트 başına: gün×정오탐 tablosu + gömülü line chart (base64 PNG).
+    Sadece veri olan event'ler, ALL_EVENTS sırasında. Tek HTML string döner."""
+    from datetime import date as _date
+    from ui_charts import build_precision_period_event_png
+
+    KR = {0: "월", 1: "화", 2: "수", 3: "목", 4: "금", 5: "토", 6: "일"}
+
+    if not ev_day or not days:
+        return "<p style='opacity:0.5'>해당 기간 데이터 없음</p>"
+
+    blocks = []
+    for ev in ALL_EVENTS:
+        series = ev_day.get(ev)
+        if not series:
+            continue
+        tot = sum(int(v.get("jeongdam", 0)) + int(v.get("odam", 0)) for v in series.values())
+        if tot <= 0:
+            continue
+
+        html = f"<h4 style='margin:18px 0 8px'>{ev}</h4>"
+        html += "<div style='overflow-x:auto'><table style='border-collapse:collapse;width:100%;font-size:13px'>"
+        html += (
+            f"<tr><th {TH}>날짜</th><th {TH_C}>요일</th>"
+            f"<th {TH_C}>정탐</th><th {TH_C}>오탐</th><th {TH_C}>오탐율 %</th></tr>"
+        )
+        for d in days:
+            cell = series.get(d) or {}
+            j = int(cell.get("jeongdam", 0))
+            o = int(cell.get("odam", 0))
+            t = j + o
+            rate = round(o / t * 100, 1) if t > 0 else 0.0
+            rc = "#E45756" if rate > 30 else "#F58518" if rate > 15 else "inherit"
+            wd = KR[_date.fromisoformat(d).weekday()]
+            html += (
+                f"<tr><td {TD}>{d}</td><td {TD_C}>{wd}</td>"
+                f"<td {TD_C} style='color:#4C78A8'>{j:,}</td>"
+                f"<td {TD_C} style='color:#E45756'>{o:,}</td>"
+                f"<td {TD_C}><b style='color:{rc}'>{rate}%</b></td></tr>"
+            )
+        html += "</table></div>"
+
+        img = build_precision_period_event_png(ev, days, series)
+        html += f"<img src='{img}' style='width:100%;margin:6px 0 4px'/>"
+        blocks.append(html)
+
+    if not blocks:
+        return "<p style='opacity:0.5'>해당 기간 데이터 없음</p>"
+    return "".join(blocks)

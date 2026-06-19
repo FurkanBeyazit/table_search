@@ -16,7 +16,7 @@ from ui_render import (render_today_events, render_summary_counts, render_detail
     render_operator_table)
 from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_names,
     do_load_nodes_by_viewer, do_import_excel, do_add_node, do_load_server_stats,
-    do_load_precision, do_load_mihagin, do_search, do_load_false_cause,
+    do_load_precision, do_load_precision_period, do_load_mihagin, do_search, do_load_false_cause,
     do_load_time_dist_all, do_load_time_dist, do_period_query,
     do_load_operator_init, do_load_operator_chart, do_load_operator_detail,
     do_export_bhvr, do_export_dst, do_export_list,
@@ -262,32 +262,61 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css,
 
                 # ── 처리 현황 ─────────────────────────────────────────────
                 with gr.Tab("✅ 처리 현황"):
-                    with gr.Row():
-                        precision_period = gr.Radio(
-                            choices=["오늘", "7일", "14일", "21일", "전체"],
-                            value="오늘",
-                            label="기간",
-                            interactive=True,
-                        )
-                        btn_precision = gr.Button("🔄 조회", variant="primary", scale=1)
+                    with gr.Tabs():
 
-                    precision_cards_out = gr.HTML("")
+                        # ── 일자 (기존: 단일 날짜) ───────────────────────
+                        with gr.Tab("일자"):
+                            with gr.Row():
+                                precision_period = gr.Radio(
+                                    choices=["오늘", "7일", "14일", "21일", "전체"],
+                                    value="오늘",
+                                    label="기간",
+                                    interactive=True,
+                                )
+                                btn_precision = gr.Button("🔄 조회", variant="primary", scale=1)
 
-                    gr.Markdown("#### 이벤트별 정탐 / 오탐")
-                    precision_bar_out = gr.Plot(container=False)
+                            precision_cards_out = gr.HTML("")
 
-                    with gr.Row():
-                        with gr.Column():
+                            gr.Markdown("#### 이벤트별 정탐 / 오탐")
+                            precision_bar_out = gr.Plot(container=False)
+
+                            with gr.Row():
+                                with gr.Column():
+                                    gr.Markdown("##### 이벤트별 상세")
+                                    precision_event_out = gr.HTML("")
+                                with gr.Column():
+                                    gr.Markdown("##### 카메라별 오탐 순위")
+                                    precision_node_out = gr.HTML("")
+
+                            gr.Markdown("#### 일별 오탐율 추이")
+                            precision_trend_out = gr.Plot(container=False)
+                            gr.Markdown("#### 일별 정탐 / 오탐 건수")
+                            precision_count_trend_out = gr.Plot(container=False)
+
+                        # ── 기간 (신규: 누적 7/14/30일) ──────────────────
+                        with gr.Tab("기간"):
+                            with gr.Row():
+                                pp_period = gr.Radio(
+                                    choices=["7일", "14일", "30일"],   # 30일 = 1개월
+                                    value="7일",
+                                    label="기간",
+                                    interactive=True,
+                                )
+                                btn_pp = gr.Button("🔄 조회", variant="primary", scale=1)
+
+                            # ── 상단: 기간 합계 ──
+                            pp_cards_out = gr.HTML("")
+                            gr.Markdown("#### 이벤트별 정탐 / 오탐")
+                            pp_bar_out = gr.Plot(container=False)
+                            gr.Markdown("#### 일별 정탐 / 오탐 건수 (전체)")
+                            pp_daily_trend_out = gr.Plot(container=False)
                             gr.Markdown("##### 이벤트별 상세")
-                            precision_event_out = gr.HTML("")
-                        with gr.Column():
-                            gr.Markdown("##### 카메라별 오탐 순위")
-                            precision_node_out = gr.HTML("")
+                            pp_event_table_out = gr.HTML("")
 
-                    gr.Markdown("#### 일별 오탐율 추이")
-                    precision_trend_out = gr.Plot(container=False)
-                    gr.Markdown("#### 일별 정탐 / 오탐 건수")
-                    precision_count_trend_out = gr.Plot(container=False)
+                            # ── 하단: 이벤트별 일자 추이 (scroll) ──
+                            gr.Markdown("---")
+                            gr.Markdown("### 이벤트별 일자 추이")
+                            pp_breakdown_out = gr.HTML("")
 
                 # ── 시간대 분석 ──────────────────────────────────────────
                 with gr.Tab("🕐 시간대 분석"):
@@ -592,6 +621,12 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css,
     ]
     btn_precision.click(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
     precision_period.change(do_load_precision, inputs=[precision_period], outputs=_precision_outs)
+
+    _pp_outs = [
+        pp_cards_out, pp_bar_out, pp_daily_trend_out,
+        pp_event_table_out, pp_breakdown_out,
+    ]
+    btn_pp.click(do_load_precision_period, inputs=[pp_period], outputs=_pp_outs)
 
     _time_all_outs = [
         time_all_cards_out, time_all_heatmap_out,

@@ -235,6 +235,168 @@ def get_precision(
     }
 
 
+# ── /api/analysis/precision_period ────────────────────────────────────────────
+
+@router.get("/precision_period")
+def get_precision_period(
+    days: int = Query(...),
+    end_date: str = Query(default=None),
+):
+    """기간(누적) 정탐/오탐: 기간 합계 summary + event별 + 일별 trend + event×day 상세.
+    days = 기간 길이(7/14/30). end_date(YYYY-MM-DD) verilmezse today.
+    Pencere = [end-(days-1), end] (bitiş günü dahil)."""
+    try:
+        end = date.fromisoformat(end_date) if end_date else date.today()
+    except ValueError:
+        end = date.today()
+    start = end - timedelta(days=days - 1)
+
+    dt_where   = "AND DATE(reg_dt) >= %s AND DATE(reg_dt) <= %s"
+    dt_params  = [start, end]
+    dt_where_b = "AND DATE(b.reg_dt) >= %s AND DATE(b.reg_dt) <= %s"
+
+    # 1. Summary (기간 합계) ───────────────────────────────────────────────────
+    s = database.run_query(
+        f"SELECT COUNT(*) AS total, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '1') AS jeongdam, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0') AS odam "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE prcs_yn = '1' AND evnt_knd IN (%s, %s) {dt_where}",
+        [BHVR_EVNT_KND, DST_EVNT_KND] + dt_params,
+    )
+    row   = s[0] if s else {}
+    total = int(row.get("total",    0) or 0)
+    jd    = int(row.get("jeongdam", 0) or 0)
+    od    = int(row.get("odam",     0) or 0)
+    prec  = round(jd / total * 100, 1) if total > 0 else 0.0
+    summary = {"total": total, "jeongdam": jd, "odam": od, "precision": prec}
+
+    # 2. Event bazlı (기간 합계) ────────────────────────────────────────────────
+    def ev_query(table, knd):
+        return database.run_query(
+            f"SELECT b.{EVENT_COL} AS et, "
+            f"  COUNT(*) AS total, "
+            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1' AND e.fls_pst_yn = '1') AS jeongdam, "
+            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1' AND e.fls_pst_yn = '0') AS odam "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL}, reg_dt FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL {dt_where_b} "
+            f"GROUP BY b.{EVENT_COL}",
+            [knd] + dt_params,
+        )
+
+    ev_map = {}
+    for r in ev_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_query(DST_TABLE, DST_EVNT_KND):
+        t = int(r["total"]    or 0)
+        j = int(r["jeongdam"] or 0)
+        o = int(r["odam"]     or 0)
+        ev_map[r["et"]] = {
+            "jeongdam":  j,
+            "odam":      o,
+            "total":     t,
+            "odam_rate": round(o / t * 100, 1) if t > 0 else 0.0,
+        }
+
+    def raw_total_query(table):
+        return database.run_query(
+            f"SELECT {EVENT_COL} AS et, COUNT(*) AS cnt "
+            f"FROM {table} "
+            f"WHERE TRUE {dt_where} "
+            f"GROUP BY {EVENT_COL}",
+            dt_params,
+        )
+
+    raw_total_map = {}
+    for r in raw_total_query(BHVR_TABLE) + raw_total_query(DST_TABLE):
+        raw_total_map[r["et"]] = raw_total_map.get(r["et"], 0) + int(r["cnt"] or 0)
+
+    knd_map = {ev: BHVR_EVNT_KND for ev in BHVR_EVENTS}
+    knd_map.update({ev: DST_EVNT_KND for ev in DST_EVENTS})
+
+    empty_ev = {"jeongdam": 0, "odam": 0, "total": 0, "odam_rate": 0.0}
+    events = [
+        {
+            "event":       ev,
+            "knd":         knd_map.get(ev, ""),
+            "event_total": raw_total_map.get(ev, 0),
+            **ev_map.get(ev, empty_ev),
+        }
+        for ev in ALL_EVENTS
+    ]
+
+    # 3. Günlük trend (birleşik) ────────────────────────────────────────────────
+    daily_rows = database.run_query(
+        f"SELECT DATE(reg_dt) AS day, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '1') AS jeongdam, "
+        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0') AS odam, "
+        f"  COUNT(*) AS total "
+        f"FROM t_evnt_prcs_info "
+        f"WHERE prcs_yn = '1' {dt_where} "
+        f"GROUP BY DATE(reg_dt) ORDER BY day",
+        dt_params,
+    )
+    daily_map = {str(r["day"]): r for r in daily_rows}
+
+    days_count = (end - start).days + 1
+    daily    = []
+    day_list = []
+    for i in range(days_count):
+        d  = start + timedelta(days=i)
+        ds = str(d)
+        day_list.append(ds)
+        r  = daily_map.get(ds, {})
+        t  = int(r.get("total",    0) or 0)
+        j  = int(r.get("jeongdam", 0) or 0)
+        o  = int(r.get("odam",     0) or 0)
+        daily.append({
+            "date":      ds,
+            "label":     KR_DAYS[d.weekday()],
+            "jeongdam":  j,
+            "odam":      o,
+            "total":     t,
+            "odam_rate": round(o / t * 100, 1) if t > 0 else 0.0,
+        })
+
+    # 4. Event × day (alt bloklar) ──────────────────────────────────────────────
+    def ev_day_query(table, knd):
+        return database.run_query(
+            f"SELECT DATE(e.reg_dt) AS day, b.{EVENT_COL} AS et, "
+            f"  SUM(CASE WHEN e.prcs_yn = '1' AND e.fls_pst_yn = '1' THEN 1 ELSE 0 END) AS jeongdam, "
+            f"  SUM(CASE WHEN e.prcs_yn = '1' AND e.fls_pst_yn = '0' THEN 1 ELSE 0 END) AS odam "
+            f"FROM t_evnt_prcs_info e "
+            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL} FROM {table} ORDER BY seq) b "
+            f"  ON b.seq = e.evnt_seq "
+            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL "
+            f"AND DATE(e.reg_dt) >= %s AND DATE(e.reg_dt) <= %s "
+            f"GROUP BY DATE(e.reg_dt), b.{EVENT_COL}",
+            [knd, start, end],
+        )
+
+    ev_day = {}
+    for r in ev_day_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_day_query(DST_TABLE, DST_EVNT_KND):
+        if not r["day"] or not r["et"]:
+            continue
+        ds = str(r["day"])
+        ev_day.setdefault(r["et"], {})
+        prev = ev_day[r["et"]].get(ds, {"jeongdam": 0, "odam": 0})
+        ev_day[r["et"]][ds] = {
+            "jeongdam": prev["jeongdam"] + int(r["jeongdam"] or 0),
+            "odam":     prev["odam"]     + int(r["odam"]     or 0),
+        }
+
+    return {
+        "days_param": days,
+        "start":      str(start),
+        "end":        str(end),
+        "summary":    summary,
+        "events":     events,
+        "daily":      daily,
+        "days":       day_list,
+        "ev_day":     ev_day,
+    }
+
+
 # ── /api/analysis/false_cause ─────────────────────────────────────────────────
 
 @router.get("/false_cause")

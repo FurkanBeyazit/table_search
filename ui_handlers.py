@@ -10,7 +10,8 @@ from ui_charts import (build_histogram, build_line_chart, build_server_line,
     build_operator_chart_trend)
 from ui_render import (render_today_events, render_summary_counts, render_detail_table,
     render_nodes_table, render_server_stats, render_precision_cards,
-    render_precision_event_table, render_precision_node_table, render_stats, render_list,
+    render_precision_event_table, render_precision_node_table, render_precision_period_breakdown,
+    render_stats, render_list,
     render_node_stats, render_false_cause_completion, render_false_cause_event_table,
     render_false_cause_user_table, render_time_dist_cards, render_period_list,
     render_operator_table, render_operator_daily_table, render_operator_30day_table,
@@ -130,6 +131,28 @@ def do_load_precision(period: str):
         render_precision_node_table(data.get("nodes", [])),
         build_precision_trend(daily),
         build_precision_count_trend(daily),
+    )
+
+
+_PP_DAYS = {"7일": 7, "14일": 14, "30일": 30}
+
+
+def do_load_precision_period(period: str, end_date: str = ""):
+    days   = _PP_DAYS.get(period, 7)
+    params = {"days": days}
+    if (end_date or "").strip():           # shipping'de boş; sadece test kütüğü doldurur
+        params["end_date"] = end_date.strip()
+    data  = api_get("/api/analysis/precision_period", params)
+    empty = plt.figure(figsize=(20, 4))
+    if "error" in data:
+        err = f"<p style='color:red'>⚠ {data['error']}</p>"
+        return err, empty, empty, err, err
+    return (
+        render_precision_cards(data.get("summary", {})),
+        build_precision_bar(data.get("events", [])),
+        build_precision_count_trend(data.get("daily", [])),
+        render_precision_event_table(data.get("events", [])),
+        render_precision_period_breakdown(data.get("ev_day", {}), data.get("days", [])),
     )
 
 

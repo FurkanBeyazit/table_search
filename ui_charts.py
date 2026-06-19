@@ -591,3 +591,36 @@ def build_time_combined(hourly_events: dict,
 
     fig.tight_layout()
     return fig
+
+
+def build_precision_period_event_png(event: str, days: list, series: dict) -> str:
+    """Tek event için 일별 정탐/오탐 건수 (2 çizgi) → base64 PNG data URI.
+    series = {day_str: {jeongdam, odam}}."""
+    import io, base64
+
+    fig, ax = plt.subplots(figsize=(20, 3))
+    jd = [int((series.get(d) or {}).get("jeongdam", 0)) for d in days]
+    od = [int((series.get(d) or {}).get("odam",     0)) for d in days]
+    xs = range(len(days))
+    labels = [d[5:] for d in days]  # "MM-DD"
+
+    ax.plot(xs, jd, marker="o", linewidth=2.5, markersize=6, color="#4C78A8", label="정탐")
+    ax.plot(xs, od, marker="o", linewidth=2.5, markersize=6, color="#E45756", label="오탐")
+    ax.fill_between(xs, jd, alpha=0.08, color="#4C78A8")
+    ax.fill_between(xs, od, alpha=0.08, color="#E45756")
+    ax.set_xticks(list(xs))
+    ax.set_xticklabels(labels, rotation=45, fontsize=10)
+    ax.tick_params(axis="y", labelsize=10)
+    ax.set_ylabel("건수", fontsize=11)
+    ax.set_title(f"{event} — 일별 정탐 / 오탐", fontsize=13, pad=10)
+    ax.legend(fontsize=11)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode()
+    return f"data:image/png;base64,{b64}"
