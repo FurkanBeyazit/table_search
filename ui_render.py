@@ -264,13 +264,23 @@ def render_precision_cards(summary: dict) -> str:
     jd    = summary.get("jeongdam", 0)
     od    = summary.get("odam", 0)
     prec  = summary.get("precision", 0.0)
+    has_mi = "mihagin" in summary          # 처리현황(get_precision) → 전체+미확인, 기간별 → eski
+    mi     = summary.get("mihagin", 0)
 
-    cs = "border-radius:10px;padding:18px 24px;text-align:center;flex:1;min-width:120px"
+    cs = "border-radius:10px;padding:18px 24px;text-align:center;flex:1;min-width:110px"
+    total_label = "전체" if has_mi else "검토 완료"
+
+    mi_card = (
+        f"<div style='{cs};background:rgba(245,133,24,0.08);border:1px solid rgba(245,133,24,0.4)'>"
+        f"<div style='font-size:2rem;font-weight:700;color:#F58518'>{mi:,}</div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>미확인</div></div>"
+    ) if has_mi else ""
+
     return (
         "<div style='display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px'>"
         f"<div style='{cs};background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.2)'>"
         f"<div style='font-size:2rem;font-weight:700'>{total:,}</div>"
-        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>검토 완료</div></div>"
+        f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>{total_label}</div></div>"
 
         f"<div style='{cs};background:rgba(76,120,168,0.08);border:1px solid rgba(76,120,168,0.35)'>"
         f"<div style='font-size:2rem;font-weight:700;color:#4C78A8'>{jd:,}</div>"
@@ -280,6 +290,8 @@ def render_precision_cards(summary: dict) -> str:
         f"<div style='font-size:2rem;font-weight:700;color:#E45756'>{od:,}</div>"
         f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>오탐</div></div>"
 
+        f"{mi_card}"
+
         f"<div style='{cs};background:rgba(84,162,75,0.08);border:1px solid rgba(84,162,75,0.35)'>"
         f"<div style='font-size:2rem;font-weight:700;color:#54A24B'>{prec}%</div>"
         f"<div style='font-size:0.8rem;opacity:0.6;margin-top:4px'>Precision</div></div>"
@@ -288,7 +300,7 @@ def render_precision_cards(summary: dict) -> str:
 
 
 def render_precision_event_table(events: list) -> str:
-    active = [e for e in events if e["total"] > 0]
+    active = [e for e in events if e.get("event_total", e.get("total", 0)) > 0]
     if not active:
         return "<p style='opacity:0.5'>데이터 없음</p>"
 
@@ -296,17 +308,20 @@ def render_precision_event_table(events: list) -> str:
     html += "<table style='border-collapse:collapse;width:100%;font-size:13px'>"
     html += (
         f"<tr><th {TH}>이벤트</th>"
-        f"<th {TH_C}>정탐</th><th {TH_C}>오탐</th>"
+        f"<th {TH_C}>정탐</th><th {TH_C}>오탐</th><th {TH_C}>미확인</th>"
         f"<th {TH_C}>합계</th><th {TH_C}>오탐율 %</th></tr>"
     )
     for e in active:
-        rate = e["odam_rate"]
-        rc   = "#E45756" if rate > 30 else "#F58518" if rate > 15 else "inherit"
+        rate  = e["odam_rate"]
+        rc    = "#E45756" if rate > 30 else "#F58518" if rate > 15 else "inherit"
+        total = e.get("event_total", e.get("total", 0))   # 합계 = ham 전체
+        mi    = e.get("mihagin", 0)
         html += (
             f"<tr><td {TD}><b>{e['event']}</b></td>"
             f"<td {TD_C} style='color:#4C78A8'>{e['jeongdam']:,}</td>"
             f"<td {TD_C} style='color:#E45756'>{e['odam']:,}</td>"
-            f"<td {TD_C}>{e['total']:,}</td>"
+            f"<td {TD_C} style='color:#F58518'>{mi:,}</td>"
+            f"<td {TD_C}><b>{total:,}</b></td>"
             f"<td {TD_C}><b style='color:{rc}'>{rate}%</b></td></tr>"
         )
     html += "</table></div>"
@@ -909,9 +924,10 @@ def render_mihagin_list(data: dict) -> str:
             img_tag = "<span style='opacity:0.4'>—</span>"
 
         cam   = htmllib.escape(str(r.get("node_name") or "")) or "<span style='opacity:0.4'>—</span>"
-        nid   = htmllib.escape(str(r.get("node_id") or ""))
-        chv   = htmllib.escape(str(r.get("ch") or ""))
-        node_ch = f"{nid}_{chv}" if nid else chv
+        nid    = htmllib.escape(str(r.get("node_id") or ""))
+        ch_raw = r.get("ch")                       # 0 da geçerli değer (or '' ile yutma!)
+        chv    = htmllib.escape(str(ch_raw).strip()) if ch_raw is not None else ""
+        node_ch = f"{nid}_{chv}" if (nid and chv != "") else (nid or chv or "—")
         ev    = htmllib.escape(str(r.get("event") or ""))
 
         html += (
@@ -1016,3 +1032,165 @@ def render_precision_period_breakdown(ev_day: dict, days: list) -> str:
     if not blocks:
         return "<p style='opacity:0.5'>해당 기간 데이터 없음</p>"
     return "".join(blocks)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# 릴리즈 노트 — 단일 소스 (single source of truth)
+# ▶ 새 기능/수정 배포 시 여기만 수정:
+#   1) RN_RELEASES 맨 앞에 새 블록 추가  (version, date=YYYY-MM-DD, new[], fix[])
+#   2) RN_APP_VERSION 을 같은 버전으로 올림  → 홈 알림 점이 다시 켜짐
+# 항목 형식: "짧은 제목 — 상세 설명"  ('이전 버전' 영역은 '—' 앞 짧은 제목만 표시)
+# RN_RECENT_DAYS(약 3개월) 지난 블록은 자동으로 '이전 버전'으로 내려간다.
+# ════════════════════════════════════════════════════════════════════════════
+RN_APP_VERSION = "4.6"
+RN_RECENT_DAYS = 90
+
+RN_RELEASES = [
+    {
+        "version": "4.6",
+        "date": "2026-06-23",
+        "new": [
+            "미확인 분석 탭 추가 — 운영자가 정탐/오탐 판정을 하지 않은 미처리 이벤트를 조회",
+            "조회 목록에서 이벤트 탐지 보고서 생성 버튼 추가 (화재·침수·쓰러짐)",
+            "처리 현황 — 일자 / 기간 두 가지 통계로 분리, 기간별 추이 분석 제공",
+            "기간별 조회 탭 추가 — 특정 시간대를 최근 14일과 비교",
+            "운영자 분석 탭 추가 — 운영자별 정탐/오탐 추이 및 처리 비중",
+            "월간 보고서 · 이벤트 현황 Excel 내보내기 (파일명에 타임스탬프 자동 적용)",
+        ],
+        "fix": [
+            "오늘의 통계 히트맵 차트가 표시되지 않던 문제 수정",
+            "조회 Node ID 필터링 정확도 개선",
+            "보고서 생성 오류 처리(에러 핸들링) 개선",
+            "UI 라벨 정리 (조희 → 조회) 및 푸터 개선",
+        ],
+    },
+    # 다음 배포 예시:
+    # {"version": "4.7", "date": "2026-07-01",
+    #  "new": ["새 기능 짧은 제목 — 상세 설명"], "fix": []},
+]
+
+
+def render_release_notes() -> str:
+    """홈 화면 우상단 'Release Notes' 배지 + 모달.
+
+    내용은 위의 RN_RELEASES(단일 소스)에서 읽는다. RN_RECENT_DAYS 가 지난 버전은
+    자동으로 '이전 버전(Older Versions)' 영역으로 내려가 짧은 제목만 표시된다.
+
+    Gradio 주의: gr.HTML 안의 <script> 는 실행되지 않으므로 모든 내용은 여기
+    Python 에서 미리 렌더링하고, 상호작용은 inline onclick / <img onload> 로 처리한다.
+    """
+    from datetime import date, datetime
+
+    version = RN_APP_VERSION
+    today   = date.today()
+
+    def _days(ds: str) -> int:
+        return (today - datetime.strptime(ds, "%Y-%m-%d").date()).days
+
+    recent = [r for r in RN_RELEASES if _days(r["date"]) <= RN_RECENT_DAYS]
+    older  = [r for r in RN_RELEASES if _days(r["date"]) >  RN_RECENT_DAYS]
+
+    def _items(arr) -> str:
+        return "".join(f"<li>{htmllib.escape(str(x))}</li>" for x in arr)
+
+    body = ""
+    # 최근 버전: 버전마다 별도 블록(버전 헤더 + 자체 What's New / Fix), 최신이 맨 위
+    for idx, r in enumerate(recent):
+        tag = "<span class='rn-rel-new'>NEW</span>" if idx == 0 else ""
+        body += (
+            f"<div class='rn-rel'><div class='rn-rel-head'>v{htmllib.escape(str(r['version']))}"
+            f"<span class='rn-rel-date'>{htmllib.escape(str(r['date']))}</span>{tag}</div>"
+        )
+        if r.get("new"):
+            body += f"<div class='rn-sec rn-new'>✨ What's New</div><ul class='rn-list'>{_items(r['new'])}</ul>"
+        if r.get("fix"):
+            body += f"<div class='rn-sec rn-fix'>🛠 Fix</div><ul class='rn-list'>{_items(r['fix'])}</ul>"
+        body += "</div>"
+    if not recent:
+        body += "<p style='opacity:0.5;font-size:0.9rem'>최근 업데이트 없음</p>"
+
+    if older:
+        body += ("<div class='rn-older-head' "
+                 "onclick=\"this.nextElementSibling.classList.toggle('rn-open')\">"
+                 "📦 이전 버전 (Older Versions) ▾</div><div class='rn-older-body'>")
+        for r in older:
+            shorts = [str(x).split(" — ")[0] for x in (r.get("new", []) + r.get("fix", []))]
+            body += (
+                f"<div class='rn-ov'><div class='rn-vh'>v{htmllib.escape(str(r['version']))}"
+                f"<span class='rn-d'>{htmllib.escape(str(r['date'])[:7])}</span></div>"
+                f"<ul class='rn-list'>{_items(shorts)}</ul></div>"
+            )
+        body += "</div>"
+
+    # 색상은 Gradio 테마 변수(var)에 연결 → 라이트/다크 자동 대응. fallback은 라이트값.
+    css = """<style>
+#rnBadge{position:absolute;top:6px;right:6px;display:inline-flex;align-items:center;gap:7px;
+  background:#1a4fa3;border:1px solid #1a4fa3;color:#fff;font-size:.85rem;font-weight:600;
+  padding:7px 14px;border-radius:20px;cursor:pointer;box-shadow:0 2px 8px rgba(26,79,163,.28);
+  transition:transform .15s;z-index:5}
+#rnBadge:hover{transform:translateY(-1px)}
+#rnBadge .rn-dot{display:block;width:8px;height:8px;border-radius:50%;background:#ef4444;animation:rnPulse 1.8s infinite}
+html.rn-seen #rnBadge .rn-dot{display:none}
+@keyframes rnPulse{0%{box-shadow:0 0 0 0 rgba(239,68,68,.6)}70%{box-shadow:0 0 0 8px rgba(239,68,68,0)}100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}}
+.rn-overlay{display:none;position:fixed;inset:0;z-index:9999;background:rgba(17,22,29,.45);
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  align-items:flex-start;justify-content:center;padding:48px 16px}
+.rn-overlay.rn-show{display:flex}
+.rn-modal{width:min(480px,100%);max-height:84vh;overflow:auto;
+  background:var(--block-background-fill,#fff);color:var(--body-text-color,#1f2937);
+  border:1px solid var(--border-color-primary,rgba(128,128,128,.25));
+  border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.45)}
+.rn-modal-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;
+  border-bottom:1px solid var(--border-color-primary,rgba(128,128,128,.25));position:sticky;top:0;
+  background:var(--block-background-fill,#fff);border-radius:14px 14px 0 0}
+.rn-modal-ttl{font-size:1.1rem;font-weight:700;color:var(--body-text-color,#1f2937)}
+.rn-modal-ver{font-size:.72rem;color:var(--body-text-color-subdued,#6b7280);font-weight:600;margin-left:6px}
+.rn-modal-x{cursor:pointer;font-size:1.2rem;color:var(--body-text-color-subdued,#6b7280);border:none;background:none;line-height:1}
+.rn-modal-body{padding:6px 22px 22px}
+.rn-rel + .rn-rel{border-top:1px solid var(--border-color-primary,rgba(128,128,128,.2));margin-top:12px;padding-top:4px}
+.rn-rel-head{display:flex;align-items:center;gap:8px;margin:14px 0 2px;font-size:.98rem;font-weight:700;color:var(--body-text-color,#1f2937)}
+.rn-rel-date{font-size:.72rem;font-weight:500;color:var(--body-text-color-subdued,#6b7280)}
+.rn-rel-new{font-size:.62rem;font-weight:700;letter-spacing:.04em;background:#16a34a;color:#fff;padding:1px 7px;border-radius:9px}
+.rn-sec{font-size:.9rem;font-weight:700;margin:12px 0 8px}
+.rn-sec.rn-new{color:#3b82f6}
+.rn-sec.rn-fix{color:#f59e0b}
+.rn-list{list-style:none;margin:0;padding:0}
+.rn-list li{position:relative;padding:5px 0 5px 18px;font-size:.9rem;line-height:1.55;color:var(--body-text-color,#374151)}
+.rn-list li::before{content:"•";position:absolute;left:4px;color:var(--body-text-color-subdued,#9ca3af)}
+.rn-older-head{margin-top:22px;padding-top:14px;border-top:1px solid var(--border-color-primary,rgba(128,128,128,.25));
+  font-size:.85rem;font-weight:700;color:var(--body-text-color-subdued,#6b7280);cursor:pointer;user-select:none}
+.rn-older-body{display:none;margin-top:8px}
+.rn-older-body.rn-open{display:block}
+.rn-ov{padding:7px 0;border-bottom:1px dashed var(--border-color-primary,rgba(128,128,128,.25))}
+.rn-ov:last-child{border-bottom:none}
+.rn-vh{font-size:.8rem;font-weight:700;color:var(--body-text-color,#374151)}
+.rn-vh .rn-d{font-weight:400;color:var(--body-text-color-subdued,#6b7280);margin-left:6px}
+.rn-ov .rn-list{margin:3px 0 0}
+.rn-ov .rn-list li{font-size:.82rem;color:var(--body-text-color-subdued,#6b7280);padding:3px 0 3px 16px;line-height:1.45}
+.rn-ov .rn-list li::before{color:var(--body-text-color-subdued,#cbd5e1)}
+</style>"""
+
+    # Nokta her açılışta yanıp söner; tıklayınca o oturum için durur (kalıcılık yok).
+    open_js = (
+        "(function(btn){document.documentElement.classList.add('rn-seen');"
+        "var o=document.getElementById('rnOverlay');if(o)o.classList.add('rn-show');})(this)"
+    )
+
+    badge = (
+        "<div style='position:relative;height:0'>"
+        f"<div id='rnBadge' onclick=\"{open_js}\">"
+        "<span class='rn-dot'></span>🔔 Release Notes</div>"
+        "</div>"
+    )
+
+    modal = (
+        "<div id='rnOverlay' class='rn-overlay' "
+        "onclick=\"if(event.target===this)this.classList.remove('rn-show')\">"
+        "<div class='rn-modal'><div class='rn-modal-head'>"
+        f"<span class='rn-modal-ttl'>Release Notes <span class='rn-modal-ver'>v{htmllib.escape(version)}</span></span>"
+        "<button class='rn-modal-x' "
+        "onclick=\"var o=document.getElementById('rnOverlay');if(o)o.classList.remove('rn-show')\">✕</button>"
+        f"</div><div class='rn-modal-body'>{body}</div></div></div>"
+    )
+
+    return css + badge + modal

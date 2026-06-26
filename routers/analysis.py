@@ -22,6 +22,55 @@ def _start(period: str):
     return date.today() - timedelta(days=PERIOD_DAYS[period])
 
 
+def event_breakdown(dt_where: str, dt_params: list, events=None, node_ids=None):
+    """TEK DOĞRU KAYNAK — ham t_bhvr_anly + t_dst_anly'den event bazlı
+    전체 / 정탐 / 오탐 / 미확인. 오늘의 통계 ile aynı eksen: reg_dt, COUNT(*).
+
+      정탐  = EXISTS(prcs_yn='1' AND fls_pst_yn='1')
+      미확인 = NOT EXISTS(prcs_yn='1')
+      오탐  = 전체 − 정탐 − 미확인     → invariant: 정+오+미확인 == 전체 (her zaman)
+
+    dt_where/dt_params : reg_dt filtresi, örn. "AND DATE(reg_dt)=%s::date" / [start].
+    events / node_ids  : opsiyonel ek filtre (mihagin ekranı için).
+    Dönüş: {event_adı: {total, jeongdam, odam, mihagin}}.
+    """
+    out = {}
+    for table, knd in ((BHVR_TABLE, BHVR_EVNT_KND), (DST_TABLE, DST_EVNT_KND)):
+        extra, ep = "", []
+        if events:
+            ph = ",".join(["%s"] * len(events))
+            extra += f" AND x.{EVENT_COL} IN ({ph})"
+            ep += list(events)
+        if node_ids:
+            ph = ",".join(["%s"] * len(node_ids))
+            extra += f" AND CAST(x.node_id AS TEXT) IN ({ph})"
+            ep += list(node_ids)
+        rows = database.run_query(
+            f"SELECT {EVENT_COL} AS et, "
+            f"  COUNT(*) AS total, "
+            f"  COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM t_evnt_prcs_info e "
+            f"     WHERE e.evnt_seq = x.seq AND e.evnt_knd = %s "
+            f"       AND e.prcs_yn = '1' AND e.fls_pst_yn = '1')) AS jeongdam, "
+            f"  COUNT(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM t_evnt_prcs_info e "
+            f"     WHERE e.evnt_seq = x.seq AND e.evnt_knd = %s AND e.prcs_yn = '1')) AS mihagin "
+            f"FROM {table} x "
+            f"WHERE TRUE {dt_where}{extra} "
+            f"GROUP BY {EVENT_COL}",
+            [knd, knd] + dt_params + ep,
+        )
+        for r in rows:
+            total    = int(r["total"]    or 0)
+            jeongdam = int(r["jeongdam"] or 0)
+            mihagin  = int(r["mihagin"]  or 0)
+            out[r["et"]] = {
+                "total":    total,
+                "jeongdam": jeongdam,
+                "odam":     total - jeongdam - mihagin,
+                "mihagin":  mihagin,
+            }
+    return out
+
+
 # ── /api/analysis/precision ───────────────────────────────────────────────────
 
 @router.get("/precision")
@@ -44,98 +93,44 @@ def get_precision(
     dt_where  = "AND DATE(reg_dt) = %s::date" if start else ""
     dt_params = [start] if start else []
 
-    # 1. Summary ────────────────────────────────────────────────────────────
-    s = database.run_query(
-        f"SELECT "
-        f"  COUNT(*) AS total, "
-        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '1') AS jeongdam, "
-        f"  COUNT(*) FILTER (WHERE fls_pst_yn = '0') AS odam "
-        f"FROM t_evnt_prcs_info "
-        f"WHERE prcs_yn = '1' AND evnt_knd IN (%s, %s) {dt_where}",
-        [BHVR_EVNT_KND, DST_EVNT_KND] + dt_params,
-    )
-    row   = s[0] if s else {}
-    total = int(row.get("total",    0) or 0)
-    jd    = int(row.get("jeongdam", 0) or 0)
-    od    = int(row.get("odam",     0) or 0)
-    prec  = round(jd / total * 100, 1) if total > 0 else 0.0
+    # TEK DOĞRU KAYNAK: event_breakdown (ham, reg_dt, COUNT(*)).
+    #    전체 = 오늘의 통계 ile birebir; 정탐 + 오탐 + 미확인 = 전체 (invariant).
+    bd = event_breakdown(dt_where, dt_params)
 
-    summary = {"total": total, "jeongdam": jd, "odam": od, "precision": prec}
+    # 1. Summary — kartlar da aynı kaynaktan: 전체 / 정탐 / 오탐 / 미확인.
+    total = sum(b["total"]    for b in bd.values())   # 전체 = ham (오늘의 통계 ile aynı)
+    jd    = sum(b["jeongdam"] for b in bd.values())
+    od    = sum(b["odam"]     for b in bd.values())
+    mi    = sum(b["mihagin"]  for b in bd.values())
+    prec  = round(jd / (jd + od) * 100, 1) if (jd + od) > 0 else 0.0   # 정탐/(정+오)
 
-    # 미확인(prcs_yn='0') 포함 전체 건수 (mail 헤더용)
-    ext = database.run_query(
-        f"SELECT "
-        f"  COUNT(*) AS grand_total, "
-        f"  COUNT(*) FILTER (WHERE evnt_knd = %s) AS bhvr_total, "
-        f"  COUNT(*) FILTER (WHERE evnt_knd = %s) AS dst_total "
-        f"FROM t_evnt_prcs_info "
-        f"WHERE prcs_yn IS NOT NULL AND evnt_knd IN (%s, %s) {dt_where}",
-        [BHVR_EVNT_KND, DST_EVNT_KND, BHVR_EVNT_KND, DST_EVNT_KND] + dt_params,
-    )
-    ext_row = ext[0] if ext else {}
-    summary["grand_total"] = int(ext_row.get("grand_total", 0) or 0)
-    summary["bhvr_total"]  = int(ext_row.get("bhvr_total",  0) or 0)
-    summary["dst_total"]   = int(ext_row.get("dst_total",   0) or 0)
+    summary = {
+        "total":    total, "jeongdam": jd, "odam": od,
+        "mihagin":  mi,     "precision": prec,
+    }
+    # mail 헤더 호환 (grand_total = 처리된 합계, 카테고리별)
+    summary["grand_total"] = jd + od
+    summary["bhvr_total"]  = sum(b["jeongdam"] + b["odam"] for ev, b in bd.items() if ev in BHVR_EVENTS)
+    summary["dst_total"]   = sum(b["jeongdam"] + b["odam"] for ev, b in bd.items() if ev in DST_EVENTS)
 
-    # 2. Event bazlı ────────────────────────────────────────────────────────
-    # 정/오탐 tarih bazı = eventin oluşma tarihi (b.reg_dt), prcs işlenme tarihi değil.
-    # Böylece 전체 (ham event tablosu) ile aynı güne düşer → 정탐+오탐 her zaman 전체'nin alt kümesi.
-    dt_where_b = "AND DATE(b.reg_dt) = %s::date" if start else ""
-
-    def ev_query(table, knd):
-        return database.run_query(
-            f"SELECT b.{EVENT_COL} AS et, "
-            f"  COUNT(*) AS total, "
-            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1' AND e.fls_pst_yn = '1') AS jeongdam, "
-            f"  COUNT(*) FILTER (WHERE e.prcs_yn = '1' AND e.fls_pst_yn = '0') AS odam "
-            f"FROM t_evnt_prcs_info e "
-            f"JOIN (SELECT DISTINCT ON (seq) seq, {EVENT_COL}, reg_dt FROM {table} ORDER BY seq) b "
-            f"  ON b.seq = e.evnt_seq "
-            f"WHERE e.evnt_knd = %s AND e.prcs_yn IS NOT NULL {dt_where_b} "
-            f"GROUP BY b.{EVENT_COL}",
-            [knd] + dt_params,
-        )
-
-    ev_map = {}
-    for r in ev_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_query(DST_TABLE, DST_EVNT_KND):
-        t = int(r["total"]    or 0)
-        j = int(r["jeongdam"] or 0)
-        o = int(r["odam"]     or 0)
-        ev_map[r["et"]] = {
-            "jeongdam":  j,
-            "odam":      o,
-            "total":     t,
-            "odam_rate": round(o / t * 100, 1) if t > 0 else 0.0,
-        }
-
-    # 2b. 전체 — ham event tablolarından (server endpoint ile aynı yöntem, prcs join yok).
-    #     정/오탐 prcs'ten gelir; 전체 ise o günün gerçek event sayısı (işlenmeyenler dahil).
-    def raw_total_query(table):
-        return database.run_query(
-            f"SELECT {EVENT_COL} AS et, COUNT(*) AS cnt "
-            f"FROM {table} "
-            f"WHERE TRUE {dt_where} "
-            f"GROUP BY {EVENT_COL}",
-            dt_params,
-        )
-
-    raw_total_map = {}
-    for r in raw_total_query(BHVR_TABLE) + raw_total_query(DST_TABLE):
-        raw_total_map[r["et"]] = raw_total_map.get(r["et"], 0) + int(r["cnt"] or 0)
-
+    # 2. Event bazlı (aynı bd)
     knd_map = {ev: BHVR_EVNT_KND for ev in BHVR_EVENTS}
     knd_map.update({ev: DST_EVNT_KND for ev in DST_EVENTS})
 
-    empty_ev = {"jeongdam": 0, "odam": 0, "total": 0, "odam_rate": 0.0}
-    events = [
-        {
+    events = []
+    for ev in ALL_EVENTS:
+        b = bd.get(ev, {"total": 0, "jeongdam": 0, "odam": 0, "mihagin": 0})
+        t = b["total"]
+        events.append({
             "event":       ev,
             "knd":         knd_map.get(ev, ""),
-            "event_total": raw_total_map.get(ev, 0),
-            **ev_map.get(ev, empty_ev),
-        }
-        for ev in ALL_EVENTS
-    ]
+            "event_total": t,                 # 전체 = ham (오늘의 통계 ile aynı)
+            "total":       t,                 # render uyumu (eski prcs-total yerine ham)
+            "jeongdam":    b["jeongdam"],
+            "odam":        b["odam"],
+            "mihagin":     b["mihagin"],
+            "odam_rate":   round(b["odam"] / t * 100, 1) if t > 0 else 0.0,
+        })
 
     # 3. Node bazlı ─────────────────────────────────────────────────────────
     def node_query(table, knd):
@@ -1069,8 +1064,9 @@ def _norm_date(s: str):
 
 
 def _mihagin_filters(alias: str, dt_start: str, dt_end: str, events, node_ids):
-    """원본 테이블 WHERE 조건(dtct_dt 범위 + 선택 필터) + params."""
-    conds  = [f"{alias}.dtct_dt >= %s", f"{alias}.dtct_dt <= %s"]
+    """원본 테이블 WHERE 조건(reg_dt 범위 + 선택 필터) + params.
+    dt_start/dt_end = 'YYYY-MM-DD' — 오늘의 통계와 같은 reg_dt 축."""
+    conds  = [f"DATE({alias}.reg_dt) >= %s", f"DATE({alias}.reg_dt) <= %s"]
     params = [dt_start, dt_end]
     if events:
         ph = ",".join(["%s"] * len(events))
@@ -1133,60 +1129,50 @@ def get_mihagin(
     dt = _norm_date(date_to) or df
     if dt < df:
         df, dt = dt, df
-    dt_start, dt_end = df + "000000", dt + "235959"
+    d_from, d_to = _iso(df), _iso(dt)          # YYYY-MM-DD — 오늘의 통계와 같은 reg_dt 축
 
     ev_list   = [e for e in (events or [])  if e] or None
     node_list = [n for n in (node_id or []) if n] or None
 
-    cte, params = _mihagin_cte(dt_start, dt_end, ev_list, node_list)
-
-    # 1) event별 미확인 건수
-    mihagin_rows = database.run_query(
-        cte + "SELECT category, event_name, COUNT(DISTINCT seq) AS cnt "
-              "FROM mihagin GROUP BY category, event_name",
-        params,
+    # 1+2) 요약 — TEK DOĞRU KAYNAK event_breakdown (reg_dt, COUNT*, NOT EXISTS).
+    #      total = 오늘의 통계 ile birebir; mihagin = 처리현황 미확인 ile birebir.
+    bd = event_breakdown(
+        "AND DATE(reg_dt) >= %s AND DATE(reg_dt) <= %s",
+        [d_from, d_to], events=ev_list, node_ids=node_list,
     )
-    mihagin_map = {(r["category"], r["event_name"]): int(r["cnt"] or 0) for r in mihagin_rows}
 
-    # 2) event별 전체 원본 건수 (비율 분모)
-    tw_b, tp_b = _mihagin_filters("b", dt_start, dt_end, ev_list, node_list)
-    tw_d, tp_d = _mihagin_filters("d", dt_start, dt_end, ev_list, node_list)
-    ev_b, ev_d = _ev_expr("b"), _ev_expr("d")
-    total_rows = database.run_query(
-        f"SELECT {ev_b} AS event_name, 'BHAR' AS category, "
-        f"  COUNT(DISTINCT seq) AS cnt FROM {BHVR_TABLE} b WHERE {tw_b} GROUP BY {ev_b} "
-        "UNION ALL "
-        f"SELECT {ev_d} AS event_name, 'CALAMITY' AS category, "
-        f"  COUNT(DISTINCT seq) AS cnt FROM {DST_TABLE} d WHERE {tw_d} GROUP BY {ev_d}",
-        tp_b + tp_d,
-    )
-    total_map = {(r["category"], r["event_name"]): int(r["cnt"] or 0) for r in total_rows}
+    knd_map = {ev: BHVR_EVNT_KND for ev in BHVR_EVENTS}
+    knd_map.update({ev: DST_EVNT_KND for ev in DST_EVENTS})
 
-    grand_mihagin = sum(mihagin_map.values())
-    grand_all     = sum(total_map.values())
+    grand_mihagin = sum(b["mihagin"] for b in bd.values())
+    grand_all     = sum(b["total"]   for b in bd.values())
 
     summary_events = []
-    for (cat, ev), cnt in mihagin_map.items():
-        tot = total_map.get((cat, ev), 0)
+    for ev in ALL_EVENTS:
+        b = bd.get(ev)
+        if not b or b["total"] == 0:
+            continue
+        mi, tot = b["mihagin"], b["total"]
         summary_events.append({
-            "category":   cat,
+            "category":   knd_map.get(ev, ""),
             "event":      ev,
-            "mihagin":    cnt,
+            "mihagin":    mi,
             "total":      tot,
-            "event_rate": round(cnt / tot * 100, 1) if tot > 0 else 0.0,
-            "share":      round(cnt / grand_mihagin * 100, 1) if grand_mihagin > 0 else 0.0,
+            "event_rate": round(mi / tot * 100, 1) if tot > 0 else 0.0,
+            "share":      round(mi / grand_mihagin * 100, 1) if grand_mihagin > 0 else 0.0,
         })
     summary_events.sort(key=lambda x: -x["mihagin"])
 
     summary = {
         "total":             grand_mihagin,
-        "bhvr_total":        sum(c for (cat, _), c in mihagin_map.items() if cat == "BHAR"),
-        "dst_total":         sum(c for (cat, _), c in mihagin_map.items() if cat == "CALAMITY"),
+        "bhvr_total":        sum(b["mihagin"] for ev, b in bd.items() if ev in BHVR_EVENTS),
+        "dst_total":         sum(b["mihagin"] for ev, b in bd.items() if ev in DST_EVENTS),
         "event_count_total": grand_all,
         "overall_rate":      round(grand_mihagin / grand_all * 100, 1) if grand_all > 0 else 0.0,
     }
 
-    # 3) 상세 목록 (중복 seq 제거 + viewer JOIN + 페이지)
+    # 3) 상세 목록 — reg_dt 필터(요약과 동일 축), dtct_dt는 표시(탐지 시각)용
+    cte, params = _mihagin_cte(d_from, d_to, ev_list, node_list)
     from routers.search import img_to_thumb_url, img_to_api_url
     page   = max(1, page)
     offset = (page - 1) * size

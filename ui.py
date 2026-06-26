@@ -13,7 +13,7 @@ from ui_render import (render_today_events, render_summary_counts, render_detail
     render_precision_event_table, render_precision_node_table, render_stats, render_list,
     render_node_stats, render_false_cause_completion, render_false_cause_event_table,
     render_false_cause_user_table, render_time_dist_cards, render_period_list,
-    render_operator_table)
+    render_operator_table, render_release_notes)
 from ui_handlers import (api_get, load_today_tab, load_summary_tab, get_viewer_names,
     do_load_nodes_by_viewer, do_import_excel, do_add_node, do_load_server_stats,
     do_load_precision, do_load_precision_period, do_load_mihagin, do_search, do_load_false_cause,
@@ -44,6 +44,7 @@ with gr.Blocks(title="Ainos Analytics", theme=gr.themes.Soft(), css=_custom_css,
 
         # ── Tab 0: Home ──────────────────────────────────────────────────────
         with gr.Tab("🏠 Home", id=0):
+            gr.HTML(render_release_notes())   # 우상단 'Release Notes' 배지 + 모달
             gr.HTML(
                 "<div style='text-align:center;padding:48px 0 24px'>"
                 "<div style='display:inline-block;"
