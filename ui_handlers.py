@@ -1005,7 +1005,9 @@ def do_generate_event_count_report(year: int, month: int):
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
-    data = api_get("/api/analysis/monthly_report", {"year": year, "month": month})
+    # 이벤트 현황(건수) = 처리 여부 무관, 원본 발생 테이블(t_bhvr_anly/t_dst_anly) 기준
+    data = api_get("/api/analysis/monthly_report",
+                   {"year": year, "month": month, "source": "raw"})
     if "error" in data:
         return gr.update(), f"<p style='color:red'>⚠ {data['error']}</p>"
 

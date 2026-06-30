@@ -1,5 +1,8 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from routers import search, stats, server, analysis
 
 import database
@@ -18,6 +21,16 @@ app.include_router(search.router)
 app.include_router(stats.router)
 app.include_router(server.router)
 app.include_router(analysis.router)
+
+
+# ── Yeni UI (beta) — Gradio'dan bağımsız, sadece ek route ──────────────────────
+_WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
+if os.path.isdir(_WEB_DIR):
+    app.mount("/static", StaticFiles(directory=_WEB_DIR), name="static")
+
+    @app.get("/app")
+    def serve_dashboard():
+        return FileResponse(os.path.join(_WEB_DIR, "dashboard.html"))
 
 
 @app.on_event("startup")

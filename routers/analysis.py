@@ -897,10 +897,18 @@ def get_operator_chart(reg_id: str = Query(...)):
 # ── /api/analysis/monthly_report ──────────────────────────────────────────────
 
 @router.get("/monthly_report")
-def get_monthly_report(year: int = Query(...), month: int = Query(...)):
-    """월간 보고서 데이터: event×day, camera×day, event×camera×day."""
+def get_monthly_report(year: int = Query(...), month: int = Query(...),
+                       source: str = Query(default="processed")):
+    """월간 보고서 데이터: event×day, camera×day, event×camera×day.
+
+    source="processed" (기본): t_evnt_prcs_info 기준 (정탐/오탐 분리, prcs_yn IS NOT NULL).
+    source="raw":  ham olay tablolarından (t_bhvr_anly/t_dst_anly) doğrudan 발생 건수.
+                   정탐/오탐 ayrımı yok → tüm sayım jeongdam'a yazılır, odam=0.
+                   이벤트 현황(건수) 보고서가 이 모드를 사용 (처리 여부 무관 전체 발생)."""
     import calendar
     from datetime import date as _d
+
+    raw = (source == "raw")
 
     first_day = _d(year, month, 1)
     last_day  = _d(year, month, calendar.monthrange(year, month)[1])
@@ -929,8 +937,21 @@ def get_monthly_report(year: int = Query(...), month: int = Query(...)):
             [knd, first_day, last_day],
         )
 
+    def ev_day_query_raw(table):
+        return database.run_query(
+            f"SELECT DATE(reg_dt) AS day, {EVENT_COL} AS et, "
+            f"  COUNT(*) AS jeongdam, 0 AS odam "
+            f"FROM {table} "
+            f"WHERE reg_dt IS NOT NULL "
+            f"AND DATE(reg_dt) >= %s AND DATE(reg_dt) <= %s "
+            f"GROUP BY DATE(reg_dt), {EVENT_COL}",
+            [first_day, last_day],
+        )
+
     ev_day = {}  # {event: {day_str: {jeongdam, odam}}}
-    for r in ev_day_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_day_query(DST_TABLE, DST_EVNT_KND):
+    ev_day_rows = (ev_day_query_raw(BHVR_TABLE) + ev_day_query_raw(DST_TABLE)) if raw \
+        else (ev_day_query(BHVR_TABLE, BHVR_EVNT_KND) + ev_day_query(DST_TABLE, DST_EVNT_KND))
+    for r in ev_day_rows:
         if not r["day"] or not r["et"]:
             continue
         ev_day.setdefault(r["et"], {})
@@ -959,9 +980,25 @@ def get_monthly_report(year: int = Query(...), month: int = Query(...)):
             [knd] + events + [first_day, last_day],
         )
 
+    def cam_day_query_raw(table, events):
+        ph = ",".join(["%s"] * len(events))
+        return database.run_query(
+            f"SELECT DATE(reg_dt) AS day, "
+            f"  CAST(node_id AS TEXT) AS node_id, CAST(ch AS TEXT) AS ch, "
+            f"  COUNT(*) AS jeongdam, 0 AS odam "
+            f"FROM {table} "
+            f"WHERE reg_dt IS NOT NULL "
+            f"AND {EVENT_COL} IN ({ph}) "
+            f"AND DATE(reg_dt) >= %s AND DATE(reg_dt) <= %s "
+            f"GROUP BY DATE(reg_dt), node_id, ch",
+            events + [first_day, last_day],
+        )
+
     cam_day = {}  # {(node_id, ch): {day_str: {jeongdam, odam}}}
     all_cams = set()
-    for r in cam_day_query(BHVR_TABLE, BHVR_EVNT_KND, BHVR_EVENTS) + cam_day_query(DST_TABLE, DST_EVNT_KND, DST_EVENTS):
+    cam_day_rows = (cam_day_query_raw(BHVR_TABLE, BHVR_EVENTS) + cam_day_query_raw(DST_TABLE, DST_EVENTS)) if raw \
+        else (cam_day_query(BHVR_TABLE, BHVR_EVNT_KND, BHVR_EVENTS) + cam_day_query(DST_TABLE, DST_EVNT_KND, DST_EVENTS))
+    for r in cam_day_rows:
         if not r["day"]:
             continue
         key = (r["node_id"], r["ch"])
@@ -1010,8 +1047,24 @@ def get_monthly_report(year: int = Query(...), month: int = Query(...)):
             [knd] + events + [first_day, last_day],
         )
 
+    def ev_cam_day_query_raw(table, events):
+        ph = ",".join(["%s"] * len(events))
+        return database.run_query(
+            f"SELECT DATE(reg_dt) AS day, {EVENT_COL} AS et, "
+            f"  CAST(node_id AS TEXT) AS node_id, CAST(ch AS TEXT) AS ch, "
+            f"  COUNT(*) AS jeongdam, 0 AS odam "
+            f"FROM {table} "
+            f"WHERE reg_dt IS NOT NULL "
+            f"AND {EVENT_COL} IN ({ph}) "
+            f"AND DATE(reg_dt) >= %s AND DATE(reg_dt) <= %s "
+            f"GROUP BY DATE(reg_dt), {EVENT_COL}, node_id, ch",
+            events + [first_day, last_day],
+        )
+
     ev_cam_day = {}  # {event: {(node_id, ch): {day_str: {jeongdam, odam}}}}
-    for r in ev_cam_day_query(BHVR_TABLE, BHVR_EVNT_KND, BHVR_EVENTS) + ev_cam_day_query(DST_TABLE, DST_EVNT_KND, DST_EVENTS):
+    ev_cam_day_rows = (ev_cam_day_query_raw(BHVR_TABLE, BHVR_EVENTS) + ev_cam_day_query_raw(DST_TABLE, DST_EVENTS)) if raw \
+        else (ev_cam_day_query(BHVR_TABLE, BHVR_EVNT_KND, BHVR_EVENTS) + ev_cam_day_query(DST_TABLE, DST_EVNT_KND, DST_EVENTS))
+    for r in ev_cam_day_rows:
         if not r["day"] or not r["et"]:
             continue
         et  = r["et"]
